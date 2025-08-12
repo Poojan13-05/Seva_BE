@@ -4,40 +4,116 @@ const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
 require('express-async-errors');
 require('dotenv').config();
 
 const app = express();
 
-// Security middleware
-app.use(helmet());
+// Import routes
+const authRoutes = require('./routes/auth');
+const superAdminRoutes = require('./routes/superAdmin');
+const { errorResponse } = require('./utils/responseHandler');
+const logger = require('./utils/logger');
+
+// CORS must be BEFORE other middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
 }));
 
-// General middleware
+// Body parsing middleware MUST come early
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(cookieParser());
+
+// Other middleware
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable CSP for development
+}));
 app.use(compression());
 app.use(morgan('combined'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
 
-// Routes will be added here
-// app.use('/api/v1/auth', authRoutes);
-// app.use('/api/v1/users', userRoutes);
-// etc...
+// Add request logging middleware
+app.use((req, res, next) => {
+  logger.info('Incoming request:', {
+    method: req.method,
+    url: req.originalUrl,
+    body: req.body,
+    headers: {
+      'content-type': req.headers['content-type'],
+      'authorization': req.headers.authorization ? 'Bearer ***' : undefined
+    },
+    ip: req.ip
+  });
+  next();
+});
+
+// API Routes
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/super-admin', superAdminRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({ message: 'Server is healthy', timestamp: new Date() });
+  res.status(200).json({ 
+    message: 'Server is healthy', 
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ message: 'Route not found' });
+  logger.warn(`404 - Route not found: ${req.method} ${req.originalUrl}`, {
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+  res.status(404).json({ 
+    success: false,
+    message: 'Route not found',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Error handling middleware will be added here
-// app.use(errorHandler);
+// Global error handling middleware
+app.use((err, req, res, next) => {
+  logger.error('Global error handler:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+    body: req.body
+  });
+
+  // Mongoose validation error
+  if (err.name === 'ValidationError') {
+    const errors = Object.values(err.errors).map(e => e.message);
+    return errorResponse(res, 'Validation Error', 400, errors);
+  }
+
+  // Mongoose duplicate key error
+  if (err.code === 11000) {
+    const field = Object.keys(err.keyValue)[0];
+    return errorResponse(res, `${field} already exists`, 400);
+  }
+
+  // JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    return errorResponse(res, 'Invalid token', 401);
+  }
+
+  if (err.name === 'TokenExpiredError') {
+    return errorResponse(res, 'Token expired', 401);
+  }
+
+  // Default error
+  const statusCode = err.statusCode || 500;
+  const message = err.message || 'Internal Server Error';
+  
+  return errorResponse(res, message, statusCode);
+});
 
 module.exports = app;
