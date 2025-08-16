@@ -25,8 +25,9 @@ app.use(cors({
 }));
 
 // Body parsing middleware MUST come early
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// ✅ UPDATED: Increased limits for file uploads and large customer data
+app.use(express.json({ limit: '50mb' })); // Increased from 10mb to 50mb
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Increased from 10mb to 50mb
 app.use(cookieParser());
 
 // Other middleware
@@ -38,13 +39,21 @@ app.use(morgan('combined'));
 
 // Add request logging middleware
 app.use((req, res, next) => {
+  // Log request details but limit body size in logs to prevent spam
+  const logBody = req.body && typeof req.body === 'object' 
+    ? Object.keys(req.body).length > 0 
+      ? '{ data present }' 
+      : req.body
+    : req.body;
+
   logger.info('Incoming request:', {
     method: req.method,
     url: req.originalUrl,
-    body: req.body,
+    body: logBody,
     headers: {
       'content-type': req.headers['content-type'],
-      'authorization': req.headers.authorization ? 'Bearer ***' : undefined
+      'authorization': req.headers.authorization ? 'Bearer ***' : undefined,
+      'content-length': req.headers['content-length']
     },
     ip: req.ip
   });
@@ -60,7 +69,9 @@ app.get('/health', (req, res) => {
   res.status(200).json({ 
     message: 'Server is healthy', 
     timestamp: new Date(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime()
   });
 });
 
@@ -85,7 +96,7 @@ app.use((err, req, res, next) => {
     url: req.originalUrl,
     method: req.method,
     ip: req.ip,
-    body: req.body
+    body: req.body ? 'Request body present' : 'No body' // Avoid logging sensitive data
   });
 
   // Mongoose validation error
@@ -107,6 +118,25 @@ app.use((err, req, res, next) => {
 
   if (err.name === 'TokenExpiredError') {
     return errorResponse(res, 'Token expired', 401);
+  }
+
+  // File upload errors (Multer)
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return errorResponse(res, 'File too large', 413, ['Maximum file size exceeded']);
+  }
+
+  if (err.code === 'LIMIT_FILE_COUNT') {
+    return errorResponse(res, 'Too many files', 413, ['Maximum file count exceeded']);
+  }
+
+  // AWS S3 errors
+  if (err.code === 'NoSuchBucket') {
+    return errorResponse(res, 'Storage configuration error', 500);
+  }
+
+  // Request entity too large
+  if (err.type === 'entity.too.large') {
+    return errorResponse(res, 'Request too large', 413, ['Request payload exceeds maximum size']);
   }
 
   // Default error
