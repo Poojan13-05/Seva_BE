@@ -200,6 +200,38 @@ adminSchema.methods.toJSON = function() {
 };
 
 
+adminSchema.index({ name: 1 }); // For name-based sorting and searching
+adminSchema.index({ phone: 1 }); // For phone number searching
+adminSchema.index({ createdAt: -1 }); // For date-based sorting (most recent first)
+adminSchema.index({ updatedAt: -1 }); // For last updated sorting
+adminSchema.index({ lastLogin: -1 }); // For tracking login activity
+
+// Compound indexes for efficient filtering combinations
+adminSchema.index({ role: 1, isActive: 1 }); // Filter by role and status together
+adminSchema.index({ role: 1, createdAt: -1 }); // Get recent admins by role
+adminSchema.index({ isActive: 1, createdAt: -1 }); // Get recent active/inactive users
+adminSchema.index({ email: 1, isActive: 1 }); // Email lookup with status check
+
+// Text index for full-text search across name, email, and phone
+adminSchema.index({
+  name: 'text',
+  email: 'text',
+  phone: 'text'
+}, {
+  weights: {
+    name: 10,    // Name has highest weight in search
+    email: 5,    // Email has medium weight
+    phone: 1     // Phone has lowest weight
+  },
+  name: 'admin_text_search',
+  default_language: 'english'
+});
+
+// Sparse indexes for optional fields
+adminSchema.index({ phone: 1 }, { sparse: true }); // Only index documents that have phone
+adminSchema.index({ lastLogin: -1 }, { sparse: true }); // Only index documents that have lastLogin
+
+
 const Admin = mongoose.model('Admin', adminSchema);
 
 module.exports = Admin;

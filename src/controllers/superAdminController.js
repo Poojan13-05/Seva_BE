@@ -46,18 +46,208 @@ const createAdmin = async (req, res) => {
   }
 };
 
+// ENHANCED: Get all admins with pagination, search, and filtering
 const getAllAdmins = async (req, res) => {
   try {
     if (req.admin.role !== 'super_admin') {
       return errorResponse(res, 'Only super admin can view all admins', 403);
     }
 
-    const admins = await Admin.getAdminsList(req.admin);
+    // Extract query parameters
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      status = 'all', // all, active, inactive
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
 
-    successResponse(res, { admins, count: admins.length }, 'Admins retrieved successfully', 200);
+    // Build search query
+    const searchQuery = { role: 'admin' }; // Only get admins, not super_admin
+
+    // Add search functionality
+    if (search.trim()) {
+      searchQuery.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Add status filter
+    if (status !== 'all') {
+      searchQuery.isActive = status === 'active';
+    }
+
+    // Calculate pagination
+    const pageNumber = Math.max(1, parseInt(page));
+    const limitNumber = Math.max(1, Math.min(100, parseInt(limit))); // Max 100 per page
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Build sort object
+    const sortObject = {};
+    sortObject[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Execute queries
+    const [admins, totalCount] = await Promise.all([
+      Admin.find(searchQuery)
+        .select('-password -passwordResetToken -passwordResetExpire')
+        .populate('createdBy', 'name email')
+        .sort(sortObject)
+        .skip(skip)
+        .limit(limitNumber),
+      Admin.countDocuments(searchQuery)
+    ]);
+
+    // Calculate pagination info
+    const totalPages = Math.ceil(totalCount / limitNumber);
+    const hasNextPage = pageNumber < totalPages;
+    const hasPrevPage = pageNumber > 1;
+
+    const pagination = {
+      currentPage: pageNumber,
+      totalPages,
+      totalCount,
+      limit: limitNumber,
+      hasNextPage,
+      hasPrevPage,
+      nextPage: hasNextPage ? pageNumber + 1 : null,
+      prevPage: hasPrevPage ? pageNumber - 1 : null
+    };
+
+    logger.info('Admins retrieved:', {
+      requestedBy: req.admin._id,
+      totalCount,
+      page: pageNumber,
+      search: search || 'none',
+      status,
+      ip: req.ip
+    });
+
+    successResponse(res, {
+      admins,
+      pagination,
+      filters: {
+        search,
+        status,
+        sortBy,
+        sortOrder
+      }
+    }, 'Admins retrieved successfully', 200);
+
   } catch (error) {
     logger.error('Get admins error:', error);
     return errorResponse(res, 'Failed to retrieve admins', 500);
+  }
+};
+
+// ENHANCED: Get admin statistics for dashboard
+const getAdminStats = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can view admin statistics', 403);
+    }
+
+    const [
+      totalAdmins,
+      activeAdmins,
+      inactiveAdmins,
+      recentAdmins
+    ] = await Promise.all([
+      Admin.countDocuments({ role: 'admin' }),
+      Admin.countDocuments({ role: 'admin', isActive: true }),
+      Admin.countDocuments({ role: 'admin', isActive: false }),
+      Admin.countDocuments({
+        role: 'admin',
+        createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
+      })
+    ]);
+
+    const stats = {
+      totalAdmins,
+      activeAdmins,
+      inactiveAdmins,
+      recentAdmins,
+      activePercentage: totalAdmins > 0 ? Math.round((activeAdmins / totalAdmins) * 100) : 0
+    };
+
+    successResponse(res, { stats }, 'Admin statistics retrieved successfully', 200);
+  } catch (error) {
+    logger.error('Get admin stats error:', error);
+    return errorResponse(res, 'Failed to retrieve admin statistics', 500);
+  }
+};
+
+// ENHANCED: Bulk operations for admins
+const bulkUpdateAdmins = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can perform bulk operations', 403);
+    }
+
+    const { adminIds, action } = req.body;
+
+    if (!adminIds || !Array.isArray(adminIds) || adminIds.length === 0) {
+      return errorResponse(res, 'Admin IDs array is required', 400);
+    }
+
+    if (!['activate', 'deactivate', 'delete'].includes(action)) {
+      return errorResponse(res, 'Invalid action. Use: activate, deactivate, or delete', 400);
+    }
+
+    // Prevent operations on super admin
+    const adminsToUpdate = await Admin.find({
+      _id: { $in: adminIds },
+      role: 'admin' // Only allow operations on regular admins
+    });
+
+    if (adminsToUpdate.length === 0) {
+      return errorResponse(res, 'No valid admins found for the operation', 400);
+    }
+
+    let result;
+    
+    switch (action) {
+      case 'activate':
+        result = await Admin.updateMany(
+          { _id: { $in: adminsToUpdate.map(a => a._id) } },
+          { isActive: true }
+        );
+        break;
+        
+      case 'deactivate':
+        result = await Admin.updateMany(
+          { _id: { $in: adminsToUpdate.map(a => a._id) } },
+          { isActive: false }
+        );
+        break;
+        
+      case 'delete':
+        result = await Admin.deleteMany({
+          _id: { $in: adminsToUpdate.map(a => a._id) }
+        });
+        break;
+    }
+
+    logger.info('Bulk admin operation performed:', {
+      performedBy: req.admin._id,
+      action,
+      adminIds: adminsToUpdate.map(a => a._id),
+      affectedCount: result.modifiedCount || result.deletedCount,
+      ip: req.ip
+    });
+
+    successResponse(res, {
+      action,
+      requestedCount: adminIds.length,
+      affectedCount: result.modifiedCount || result.deletedCount,
+      skippedCount: adminIds.length - adminsToUpdate.length
+    }, `Bulk ${action} operation completed successfully`, 200);
+
+  } catch (error) {
+    logger.error('Bulk update admins error:', error);
+    return errorResponse(res, 'Failed to perform bulk operation', 500);
   }
 };
 
@@ -260,6 +450,8 @@ const deleteAdmin = async (req, res) => {
 module.exports = {
   createAdmin,
   getAllAdmins,
+  getAdminStats,        // NEW
+  bulkUpdateAdmins,     // NEW
   getAdminById,
   updateAdmin,
   toggleAdminStatus,
