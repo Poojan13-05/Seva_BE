@@ -1,10 +1,9 @@
-// src/middleware/upload.js
+// src/middleware/upload.js - ENHANCED VERSION FOR CUSTOMER MODULE
 const multer = require('multer');
 const multerS3 = require('multer-s3');
 const AWS = require('aws-sdk');
 const path = require('path');
 const crypto = require('crypto');
-const sharp = require('sharp');
 
 // Configure AWS
 const s3 = new AWS.S3({
@@ -13,7 +12,7 @@ const s3 = new AWS.S3({
   region: process.env.AWS_REGION || 'us-east-1'
 });
 
-// File type validation
+// File type validation - Enhanced for customer documents
 const allowedMimeTypes = [
   // Images
   'image/jpeg',
@@ -35,68 +34,78 @@ const allowedExtensions = [
   '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt'
 ];
 
-// File filter function
+// Enhanced file filter function
 const fileFilter = (req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
   
+  // Check MIME type and extension
   if (allowedMimeTypes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error(`Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`), false);
+    cb(new Error(`Invalid file type: ${ext}. Allowed types: ${allowedExtensions.join(', ')}`), false);
   }
 };
 
-// Generate unique filename
-const generateFileName = (originalname) => {
+// Generate unique filename with customer context
+const generateFileName = (originalname, fieldname, customerId = null) => {
   const timestamp = Date.now();
   const randomString = crypto.randomBytes(6).toString('hex');
   const ext = path.extname(originalname);
   const name = path.basename(originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
-  return `${timestamp}_${randomString}_${name}${ext}`;
+  
+  // Include customer ID in filename if available
+  const prefix = customerId ? `${customerId}_` : '';
+  return `${prefix}${timestamp}_${randomString}_${name}${ext}`;
 };
 
-// S3 storage configuration
+// Determine upload folder based on field name and file type
+const getUploadFolder = (fieldname, filename) => {
+  const baseFolder = 'customers';
+  
+  switch (fieldname) {
+    case 'profilePhoto':
+      return `${baseFolder}/profile-photos`;
+    case 'documents':
+      return `${baseFolder}/documents`;
+    case 'additionalDocuments':
+      return `${baseFolder}/additional-documents`;
+    default:
+      return `${baseFolder}/misc`;
+  }
+};
+
+// S3 storage configuration for customer documents
 const s3Storage = multerS3({
   s3: s3,
-  bucket: process.env.AWS_S3_BUCKET,
+  bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
   acl: 'private', // Keep files private
   contentType: multerS3.AUTO_CONTENT_TYPE,
   key: function (req, file, cb) {
-    const folder = getUploadFolder(file.fieldname);
-    const fileName = generateFileName(file.originalname);
-    cb(null, `${folder}/${fileName}`);
+    const folder = getUploadFolder(file.fieldname, file.originalname);
+    const fileName = generateFileName(file.originalname, file.fieldname, req.body.customerId);
+    const fullPath = `${folder}/${fileName}`;
+    
+    console.log(`Uploading file to S3: ${fullPath}`);
+    cb(null, fullPath);
   },
   metadata: function (req, file, cb) {
     cb(null, {
       fieldName: file.fieldname,
       originalName: file.originalname,
       uploadedBy: req.admin ? req.admin._id.toString() : 'system',
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
+      customerId: req.body.customerId || 'unknown'
     });
   }
 });
 
-// Determine upload folder based on field name
-const getUploadFolder = (fieldname) => {
-  switch (fieldname) {
-    case 'profilePhoto':
-      return 'customers/profile-photos';
-    case 'documents':
-      return 'customers/documents';
-    case 'additionalDocuments':
-      return 'customers/additional-documents';
-    default:
-      return 'customers/misc';
-  }
-};
-
-// Multer configuration for customer documents
+// Enhanced multer configuration for customer documents
 const uploadCustomerDocuments = multer({
   storage: s3Storage,
   fileFilter: fileFilter,
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
-    files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 10 // 10 files max
+    files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 15 // Increased for customer docs
   }
 });
 
@@ -111,7 +120,7 @@ const uploadMiddleware = {
   // Multiple additional documents (up to 5)
   additionalDocuments: uploadCustomerDocuments.array('additionalDocuments', 5),
   
-  // Mixed uploads for customer creation
+  // Mixed uploads for customer creation/update
   customerDocuments: uploadCustomerDocuments.fields([
     { name: 'profilePhoto', maxCount: 1 },
     { name: 'documents', maxCount: 10 },
@@ -119,37 +128,66 @@ const uploadMiddleware = {
   ])
 };
 
-// Error handling middleware
+// Enhanced error handling middleware
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
+    console.error('Multer error:', err);
+    
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
         success: false,
         message: 'File too large',
-        details: `Maximum file size is ${process.env.MAX_FILE_SIZE || 5242880} bytes (5MB)`
+        details: `Maximum file size is ${process.env.MAX_FILE_SIZE || 5242880} bytes (5MB)`,
+        errorCode: 'FILE_TOO_LARGE'
       });
     }
+    
     if (err.code === 'LIMIT_FILE_COUNT') {
       return res.status(400).json({
         success: false,
         message: 'Too many files',
-        details: 'Maximum 10 files allowed per request'
+        details: 'Maximum 15 files allowed per request',
+        errorCode: 'TOO_MANY_FILES'
       });
     }
+    
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {
       return res.status(400).json({
         success: false,
         message: 'Unexpected file field',
-        details: 'Invalid file field name'
+        details: 'Invalid file field name. Use: profilePhoto, documents, or additionalDocuments',
+        errorCode: 'INVALID_FIELD'
       });
     }
   }
   
-  if (err.message.includes('Invalid file type')) {
+  if (err.message && err.message.includes('Invalid file type')) {
     return res.status(400).json({
       success: false,
       message: 'Invalid file type',
-      details: err.message
+      details: err.message,
+      errorCode: 'INVALID_FILE_TYPE'
+    });
+  }
+  
+  // AWS S3 errors
+  if (err.code === 'NoSuchBucket') {
+    console.error('S3 Bucket not found:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Storage configuration error',
+      details: 'Please contact administrator',
+      errorCode: 'STORAGE_ERROR'
+    });
+  }
+  
+  if (err.code === 'AccessDenied') {
+    console.error('S3 Access denied:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Storage access denied',
+      details: 'Please contact administrator',
+      errorCode: 'STORAGE_ACCESS_DENIED'
     });
   }
   
@@ -157,7 +195,8 @@ const handleUploadError = (err, req, res, next) => {
   return res.status(500).json({
     success: false,
     message: 'File upload failed',
-    details: 'Please try again later'
+    details: process.env.NODE_ENV === 'development' ? err.message : 'Please try again later',
+    errorCode: 'UPLOAD_FAILED'
   });
 };
 
@@ -165,7 +204,7 @@ const handleUploadError = (err, req, res, next) => {
 const generateSignedUrl = async (key, expiresIn = 3600) => {
   try {
     const params = {
-      Bucket: process.env.AWS_S3_BUCKET,
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key,
       Expires: expiresIn // 1 hour default
     };
@@ -173,7 +212,7 @@ const generateSignedUrl = async (key, expiresIn = 3600) => {
     return await s3.getSignedUrlPromise('getObject', params);
   } catch (error) {
     console.error('Error generating signed URL:', error);
-    throw error;
+    throw new Error('Failed to generate file access URL');
   }
 };
 
@@ -181,7 +220,7 @@ const generateSignedUrl = async (key, expiresIn = 3600) => {
 const deleteFileFromS3 = async (key) => {
   try {
     const params = {
-      Bucket: process.env.AWS_S3_BUCKET,
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key
     };
     
@@ -189,37 +228,196 @@ const deleteFileFromS3 = async (key) => {
     console.log(`File deleted successfully: ${key}`);
   } catch (error) {
     console.error('Error deleting file from S3:', error);
+    throw new Error(`Failed to delete file: ${key}`);
+  }
+};
+
+// Utility function to check if file exists in S3
+const fileExistsInS3 = async (key) => {
+  try {
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+      Key: key
+    };
+    
+    await s3.headObject(params).promise();
+    return true;
+  } catch (error) {
+    if (error.code === 'NotFound') {
+      return false;
+    }
     throw error;
   }
 };
 
-// Utility function to compress images before upload (for profile photos)
-const compressImage = async (buffer, quality = 80) => {
+// Utility function to get file metadata from S3
+const getFileMetadata = async (key) => {
   try {
-    return await sharp(buffer)
-      .jpeg({ quality })
-      .resize(800, 800, { 
-        fit: 'inside',
-        withoutEnlargement: true 
-      })
-      .toBuffer();
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+      Key: key
+    };
+    
+    const result = await s3.headObject(params).promise();
+    return {
+      size: result.ContentLength,
+      lastModified: result.LastModified,
+      contentType: result.ContentType,
+      metadata: result.Metadata
+    };
   } catch (error) {
-    console.error('Error compressing image:', error);
-    return buffer; // Return original if compression fails
+    console.error('Error getting file metadata:', error);
+    throw new Error(`Failed to get file metadata: ${key}`);
   }
 };
 
-// Middleware to log file uploads (for monitoring)
+// Utility function to list files in a folder
+const listFilesInFolder = async (folderPath, maxKeys = 1000) => {
+  try {
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+      Prefix: folderPath,
+      MaxKeys: maxKeys
+    };
+    
+    const result = await s3.listObjectsV2(params).promise();
+    return result.Contents.map(item => ({
+      key: item.Key,
+      size: item.Size,
+      lastModified: item.LastModified,
+      url: `https://${params.Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${item.Key}`
+    }));
+  } catch (error) {
+    console.error('Error listing files:', error);
+    throw new Error(`Failed to list files in folder: ${folderPath}`);
+  }
+};
+
+// Middleware to log file uploads (for monitoring and debugging)
 const logFileUpload = (req, res, next) => {
   if (req.files || req.file) {
     const files = req.files || [req.file];
-    const totalSize = Array.isArray(files) 
-      ? files.reduce((sum, file) => sum + (file.size || 0), 0)
-      : files.size || 0;
+    let totalSize = 0;
+    let fileDetails = [];
+
+    if (Array.isArray(files)) {
+      // Handle array of files
+      totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
+      fileDetails = files.map(file => ({
+        fieldname: file.fieldname,
+        originalname: file.originalname,
+        size: file.size,
+        mimetype: file.mimetype
+      }));
+    } else if (typeof files === 'object') {
+      // Handle multer fields() result
+      Object.keys(files).forEach(fieldname => {
+        files[fieldname].forEach(file => {
+          totalSize += file.size || 0;
+          fileDetails.push({
+            fieldname: file.fieldname,
+            originalname: file.originalname,
+            size: file.size,
+            mimetype: file.mimetype
+          });
+        });
+      });
+    } else {
+      // Handle single file
+      totalSize = files.size || 0;
+      fileDetails = [{
+        fieldname: files.fieldname,
+        originalname: files.originalname,
+        size: files.size,
+        mimetype: files.mimetype
+      }];
+    }
     
-    console.log(`File upload - User: ${req.admin?._id}, Files: ${Array.isArray(files) ? files.length : 1}, Total Size: ${totalSize} bytes`);
+    console.log(`File upload - User: ${req.admin?._id}, Files: ${fileDetails.length}, Total Size: ${totalSize} bytes`, {
+      files: fileDetails,
+      customerId: req.body.customerId,
+      ip: req.ip
+    });
   }
   next();
+};
+
+// Clean up temporary files (utility function for scheduled tasks)
+const cleanupTempFiles = async (olderThanDays = 7) => {
+  try {
+    const tempFolder = 'temp/';
+    const cutoffDate = new Date(Date.now() - (olderThanDays * 24 * 60 * 60 * 1000));
+    
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+      Prefix: tempFolder
+    };
+    
+    const result = await s3.listObjectsV2(params).promise();
+    const filesToDelete = result.Contents.filter(item => 
+      new Date(item.LastModified) < cutoffDate
+    );
+    
+    if (filesToDelete.length > 0) {
+      const deleteParams = {
+        Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+        Delete: {
+          Objects: filesToDelete.map(item => ({ Key: item.Key }))
+        }
+      };
+      
+      await s3.deleteObjects(deleteParams).promise();
+      console.log(`Cleaned up ${filesToDelete.length} temporary files`);
+    }
+    
+    return filesToDelete.length;
+  } catch (error) {
+    console.error('Error cleaning up temp files:', error);
+    throw error;
+  }
+};
+
+// Validate S3 configuration on startup
+const validateS3Config = async () => {
+  try {
+    console.log('Validating S3 configuration...');
+    
+    // Check if bucket exists and we have access
+    const params = {
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents'
+    };
+    
+    await s3.headBucket(params).promise();
+    console.log('✅ S3 configuration is valid');
+    
+    // Test upload/delete to verify permissions
+    const testKey = 'test/config-test.txt';
+    await s3.upload({
+      ...params,
+      Key: testKey,
+      Body: 'Configuration test',
+      ContentType: 'text/plain'
+    }).promise();
+    
+    await s3.deleteObject({
+      ...params,
+      Key: testKey
+    }).promise();
+    
+    console.log('✅ S3 permissions are working correctly');
+  } catch (error) {
+    console.error('❌ S3 configuration error:', error.message);
+    
+    if (error.code === 'NoSuchBucket') {
+      console.error('💡 Bucket does not exist. Please create it first.');
+    } else if (error.code === 'AccessDenied') {
+      console.error('💡 Access denied. Please check your AWS credentials and bucket policy.');
+    } else if (error.code === 'CredentialsError') {
+      console.error('💡 Invalid AWS credentials. Please check your environment variables.');
+    }
+    
+    throw error;
+  }
 };
 
 module.exports = {
@@ -227,7 +425,11 @@ module.exports = {
   handleUploadError,
   generateSignedUrl,
   deleteFileFromS3,
-  compressImage,
+  fileExistsInS3,
+  getFileMetadata,
+  listFilesInFolder,
   logFileUpload,
+  cleanupTempFiles,
+  validateS3Config,
   s3
 };

@@ -1,4 +1,4 @@
-// src/app.js
+// src/app.js - UPDATED VERSION
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -13,6 +13,7 @@ const app = express();
 // Import routes
 const authRoutes = require('./routes/auth');
 const superAdminRoutes = require('./routes/superAdmin');
+const customerRoutes = require('./routes/customer'); // ✅ NEW: Customer routes
 const { errorResponse } = require('./utils/responseHandler');
 const logger = require('./utils/logger');
 
@@ -63,6 +64,7 @@ app.use((req, res, next) => {
 // API Routes
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/super-admin', superAdminRoutes);
+app.use('/api/v1/customers', customerRoutes); // ✅ NEW: Customer routes
 
 // Health check
 app.get('/health', (req, res) => {
