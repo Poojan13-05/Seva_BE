@@ -1,12 +1,13 @@
-// src/config/aws.js
-const AWS = require('aws-sdk');
+// src/config/aws.js - FIXED VERSION FOR AWS SDK v3
+const { S3Client } = require('@aws-sdk/client-s3');
 
-AWS.config.update({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION || 'us-east-1'
+// Create S3 client with v3 syntax
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
 });
 
-const s3 = new AWS.S3();
-
-module.exports = { s3 };
+module.exports = { s3Client };

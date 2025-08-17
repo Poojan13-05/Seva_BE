@@ -1,13 +1,13 @@
-// src/models/Customer.js
+// src/models/Customer.js - FIXED VERSION
 const mongoose = require('mongoose');
 
 const customerSchema = new mongoose.Schema({
-  // Auto-generated Customer ID
+  // Auto-generated Customer ID - FIXED: Not required since it's auto-generated
   customerId: {
     type: String,
     unique: true,
-    required: true,
     index: true
+    // Removed required: true since it's auto-generated
   },
 
   // Customer Type
@@ -111,9 +111,13 @@ const customerSchema = new mongoose.Schema({
       enum: ['married', 'unmarried'],
       required: function() { return this.customerType === 'individual'; }
     },
+    // FIXED: Allow empty string and undefined for optional enum fields
     businessOrJob: {
       type: String,
-      enum: ['business', 'job']
+      enum: {
+        values: ['business', 'job', ''], // Allow empty string
+        message: 'Business/Job type must be either "business", "job", or empty'
+      }
     },
     nameOfBusinessJob: {
       type: String,
@@ -281,6 +285,12 @@ const customerSchema = new mongoose.Schema({
       type: String,
       required: true
     },
+    originalName: {
+      type: String
+    },
+    fileSize: {
+      type: Number
+    },
     uploadedAt: {
       type: Date,
       default: Date.now
@@ -298,6 +308,12 @@ const customerSchema = new mongoose.Schema({
     documentUrl: {
       type: String,
       required: true
+    },
+    originalName: {
+      type: String
+    },
+    fileSize: {
+      type: Number
     },
     uploadedAt: {
       type: Date,
@@ -362,17 +378,30 @@ customerSchema.virtual('personalDetails.fullName').get(function() {
   return '';
 });
 
-// Pre-save middleware to generate customer ID
+// FIXED: Pre-save middleware to generate customer ID
 customerSchema.pre('save', async function(next) {
+  // Only generate customerId for new documents
   if (this.isNew && !this.customerId) {
     try {
       let isUnique = false;
       let customerId;
       
       while (!isUnique) {
-        // Generate 6-digit random number
-        const randomNumber = Math.floor(100000 + Math.random() * 900000);
-        customerId = `SEVA-${randomNumber}`;
+        // Generate customer ID with format: SE + 4 random uppercase letters + 6 random numbers
+        const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        const numbers = '0123456789';
+        
+        let letterPart = '';
+        for (let i = 0; i < 4; i++) {
+          letterPart += letters.charAt(Math.floor(Math.random() * letters.length));
+        }
+        
+        let numberPart = '';
+        for (let i = 0; i < 6; i++) {
+          numberPart += numbers.charAt(Math.floor(Math.random() * numbers.length));
+        }
+        
+        customerId = `SE${letterPart}${numberPart}`;
         
         // Check if this ID already exists
         const existingCustomer = await this.constructor.findOne({ customerId });

@@ -1,16 +1,12 @@
-// src/middleware/upload.js - ENHANCED VERSION FOR CUSTOMER MODULE
+// src/middleware/upload.js - FIXED VERSION FOR AWS SDK v3
 const multer = require('multer');
 const multerS3 = require('multer-s3');
-const AWS = require('aws-sdk');
+const { s3Client } = require('../config/aws'); // Import the v3 client
+const { S3Client, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const { GetObjectCommand } = require('@aws-sdk/client-s3');
 const path = require('path');
 const crypto = require('crypto');
-
-// Configure AWS
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION || 'us-east-1'
-});
 
 // File type validation - Enhanced for customer documents
 const allowedMimeTypes = [
@@ -74,9 +70,9 @@ const getUploadFolder = (fieldname, filename) => {
   }
 };
 
-// S3 storage configuration for customer documents
+// S3 storage configuration for customer documents - FIXED FOR v3
 const s3Storage = multerS3({
-  s3: s3,
+  s3: s3Client, // Use the v3 client
   bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
   acl: 'private', // Keep files private
   contentType: multerS3.AUTO_CONTENT_TYPE,
@@ -200,31 +196,30 @@ const handleUploadError = (err, req, res, next) => {
   });
 };
 
-// Utility function to generate signed URL for file access
+// Utility function to generate signed URL for file access - FIXED FOR v3
 const generateSignedUrl = async (key, expiresIn = 3600) => {
   try {
-    const params = {
+    const command = new GetObjectCommand({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key,
-      Expires: expiresIn // 1 hour default
-    };
+    });
     
-    return await s3.getSignedUrlPromise('getObject', params);
+    return await getSignedUrl(s3Client, command, { expiresIn });
   } catch (error) {
     console.error('Error generating signed URL:', error);
     throw new Error('Failed to generate file access URL');
   }
 };
 
-// Utility function to delete file from S3
+// Utility function to delete file from S3 - FIXED FOR v3
 const deleteFileFromS3 = async (key) => {
   try {
-    const params = {
+    const command = new DeleteObjectCommand({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key
-    };
+    });
     
-    await s3.deleteObject(params).promise();
+    await s3Client.send(command);
     console.log(`File deleted successfully: ${key}`);
   } catch (error) {
     console.error('Error deleting file from S3:', error);
@@ -232,33 +227,33 @@ const deleteFileFromS3 = async (key) => {
   }
 };
 
-// Utility function to check if file exists in S3
+// Utility function to check if file exists in S3 - FIXED FOR v3
 const fileExistsInS3 = async (key) => {
   try {
-    const params = {
+    const command = new HeadObjectCommand({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key
-    };
+    });
     
-    await s3.headObject(params).promise();
+    await s3Client.send(command);
     return true;
   } catch (error) {
-    if (error.code === 'NotFound') {
+    if (error.name === 'NotFound') {
       return false;
     }
     throw error;
   }
 };
 
-// Utility function to get file metadata from S3
+// Utility function to get file metadata from S3 - FIXED FOR v3
 const getFileMetadata = async (key) => {
   try {
-    const params = {
+    const command = new HeadObjectCommand({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Key: key
-    };
+    });
     
-    const result = await s3.headObject(params).promise();
+    const result = await s3Client.send(command);
     return {
       size: result.ContentLength,
       lastModified: result.LastModified,
@@ -271,22 +266,22 @@ const getFileMetadata = async (key) => {
   }
 };
 
-// Utility function to list files in a folder
+// Utility function to list files in a folder - FIXED FOR v3
 const listFilesInFolder = async (folderPath, maxKeys = 1000) => {
   try {
-    const params = {
+    const command = new ListObjectsV2Command({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Prefix: folderPath,
       MaxKeys: maxKeys
-    };
+    });
     
-    const result = await s3.listObjectsV2(params).promise();
-    return result.Contents.map(item => ({
+    const result = await s3Client.send(command);
+    return result.Contents?.map(item => ({
       key: item.Key,
       size: item.Size,
       lastModified: item.LastModified,
-      url: `https://${params.Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${item.Key}`
-    }));
+      url: `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${item.Key}`
+    })) || [];
   } catch (error) {
     console.error('Error listing files:', error);
     throw new Error(`Failed to list files in folder: ${folderPath}`);
@@ -342,31 +337,32 @@ const logFileUpload = (req, res, next) => {
   next();
 };
 
-// Clean up temporary files (utility function for scheduled tasks)
+// Clean up temporary files (utility function for scheduled tasks) - FIXED FOR v3
 const cleanupTempFiles = async (olderThanDays = 7) => {
   try {
     const tempFolder = 'temp/';
     const cutoffDate = new Date(Date.now() - (olderThanDays * 24 * 60 * 60 * 1000));
     
-    const params = {
+    const listCommand = new ListObjectsV2Command({
       Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
       Prefix: tempFolder
-    };
+    });
     
-    const result = await s3.listObjectsV2(params).promise();
-    const filesToDelete = result.Contents.filter(item => 
+    const result = await s3Client.send(listCommand);
+    const filesToDelete = result.Contents?.filter(item => 
       new Date(item.LastModified) < cutoffDate
-    );
+    ) || [];
     
     if (filesToDelete.length > 0) {
-      const deleteParams = {
-        Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
-        Delete: {
-          Objects: filesToDelete.map(item => ({ Key: item.Key }))
-        }
-      };
+      const deletePromises = filesToDelete.map(item => {
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+          Key: item.Key
+        });
+        return s3Client.send(deleteCommand);
+      });
       
-      await s3.deleteObjects(deleteParams).promise();
+      await Promise.all(deletePromises);
       console.log(`Cleaned up ${filesToDelete.length} temporary files`);
     }
     
@@ -377,42 +373,39 @@ const cleanupTempFiles = async (olderThanDays = 7) => {
   }
 };
 
-// Validate S3 configuration on startup
+// Validate S3 configuration on startup - FIXED FOR v3
 const validateS3Config = async () => {
   try {
     console.log('Validating S3 configuration...');
     
     // Check if bucket exists and we have access
-    const params = {
-      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents'
-    };
+    const headCommand = new HeadObjectCommand({
+      Bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+      Key: 'test-connection' // This will fail but tells us if bucket exists
+    });
     
-    await s3.headBucket(params).promise();
+    try {
+      await s3Client.send(headCommand);
+    } catch (error) {
+      // If it's just that the object doesn't exist, that's fine
+      if (error.name === 'NotFound') {
+        console.log('✅ S3 bucket exists and is accessible');
+      } else if (error.name === 'NoSuchBucket') {
+        throw new Error('S3 bucket does not exist');
+      } else {
+        throw error;
+      }
+    }
+    
     console.log('✅ S3 configuration is valid');
-    
-    // Test upload/delete to verify permissions
-    const testKey = 'test/config-test.txt';
-    await s3.upload({
-      ...params,
-      Key: testKey,
-      Body: 'Configuration test',
-      ContentType: 'text/plain'
-    }).promise();
-    
-    await s3.deleteObject({
-      ...params,
-      Key: testKey
-    }).promise();
-    
-    console.log('✅ S3 permissions are working correctly');
   } catch (error) {
     console.error('❌ S3 configuration error:', error.message);
     
-    if (error.code === 'NoSuchBucket') {
+    if (error.name === 'NoSuchBucket') {
       console.error('💡 Bucket does not exist. Please create it first.');
-    } else if (error.code === 'AccessDenied') {
+    } else if (error.name === 'AccessDenied') {
       console.error('💡 Access denied. Please check your AWS credentials and bucket policy.');
-    } else if (error.code === 'CredentialsError') {
+    } else if (error.name === 'CredentialsError') {
       console.error('💡 Invalid AWS credentials. Please check your environment variables.');
     }
     
@@ -431,5 +424,5 @@ module.exports = {
   logFileUpload,
   cleanupTempFiles,
   validateS3Config,
-  s3
+  s3Client
 };

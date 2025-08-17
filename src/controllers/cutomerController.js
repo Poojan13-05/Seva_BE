@@ -3,6 +3,30 @@ const Customer = require('../models/Customer');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const logger = require('../utils/logger');
 const { generateSignedUrl, deleteFileFromS3 } = require('../middleware/upload');
+const { generateSignedUrl: s3GenerateSignedUrl, extractS3Key } = require('../services/s3Sevice');
+
+// Helper function to transform customer URLs to signed URLs
+const transformCustomerUrls = (customer) => {
+  const customerObj = customer.toObject ? customer.toObject() : customer;
+  
+  return {
+    ...customerObj,
+    personalDetails: {
+      ...customerObj.personalDetails,
+      profilePhoto: customerObj.personalDetails?.profilePhoto 
+        ? s3GenerateSignedUrl(extractS3Key(customerObj.personalDetails.profilePhoto))
+        : null
+    },
+    documents: customerObj.documents?.map(doc => ({
+      ...doc,
+      documentUrl: s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+    })) || [],
+    additionalDocuments: customerObj.additionalDocuments?.map(doc => ({
+      ...doc,
+      documentUrl: s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+    })) || []
+  };
+};
 
 // Create new customer
 const createCustomer = async (req, res) => {
@@ -51,7 +75,7 @@ const createCustomer = async (req, res) => {
       ip: req.ip
     });
 
-    successResponse(res, { customer }, 'Customer created successfully', 201);
+    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer created successfully', 201);
   } catch (error) {
     logger.error('Create customer error:', error);
     
@@ -147,8 +171,11 @@ const getCustomers = async (req, res) => {
       ip: req.ip
     });
 
+    // Transform customers with signed URLs
+    const customersWithSignedUrls = customers.map(transformCustomerUrls);
+
     successResponse(res, {
-      customers,
+      customers: customersWithSignedUrls,
       pagination,
       filters: {
         search,
@@ -177,7 +204,7 @@ const getCustomerById = async (req, res) => {
       return errorResponse(res, 'Customer not found', 404);
     }
 
-    successResponse(res, { customer }, 'Customer retrieved successfully', 200);
+    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer retrieved successfully', 200);
   } catch (error) {
     logger.error('Get customer by ID error:', error);
     return errorResponse(res, 'Failed to retrieve customer', 500);
@@ -246,7 +273,7 @@ const updateCustomer = async (req, res) => {
       ip: req.ip
     });
 
-    successResponse(res, { customer }, 'Customer updated successfully', 200);
+    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer updated successfully', 200);
   } catch (error) {
     logger.error('Update customer error:', error);
     
