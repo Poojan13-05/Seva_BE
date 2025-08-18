@@ -62,8 +62,18 @@ const createCustomer = async (req, res) => {
 
       // Additional documents
       if (req.files.additionalDocuments && req.files.additionalDocuments.length > 0) {
+        // Parse additional document names properly
+        let additionalDocumentNames = req.body.additionalDocumentNames;
+        
+        // Handle if it's a string (single item) or array
+        if (typeof additionalDocumentNames === 'string') {
+          additionalDocumentNames = [additionalDocumentNames];
+        } else if (!Array.isArray(additionalDocumentNames)) {
+          additionalDocumentNames = [];
+        }
+
         customerData.additionalDocuments = req.files.additionalDocuments.map((file, index) => ({
-          name: req.body.additionalDocumentNames?.[index] || file.originalname,
+          name: additionalDocumentNames[index] || file.originalname,
           documentUrl: file.location,
           originalName: file.originalname,
           fileSize: file.size
@@ -250,8 +260,18 @@ const updateCustomer = async (req, res) => {
 
       // Additional documents - append to existing
       if (req.files.additionalDocuments && req.files.additionalDocuments.length > 0) {
+        // Parse additional document names properly
+        let additionalDocumentNames = req.body.additionalDocumentNames;
+        
+        // Handle if it's a string (single item) or array
+        if (typeof additionalDocumentNames === 'string') {
+          additionalDocumentNames = [additionalDocumentNames];
+        } else if (!Array.isArray(additionalDocumentNames)) {
+          additionalDocumentNames = [];
+        }
+
         const newAdditionalDocs = req.files.additionalDocuments.map((file, index) => ({
-          name: req.body.additionalDocumentNames?.[index] || file.originalname,
+          name: additionalDocumentNames[index] || file.originalname,
           documentUrl: file.location,
           originalName: file.originalname,
           fileSize: file.size
