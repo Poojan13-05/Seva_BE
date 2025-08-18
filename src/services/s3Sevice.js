@@ -24,7 +24,14 @@ const generateSignedUrl = (s3Key, expiresIn = 3600) => {
 
 const extractS3Key = (s3Url) => {
   if (!s3Url) return null;
-  return s3Url.replace(`https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/`, '');
+  
+  // Remove any query parameters (access tokens) first
+  const urlWithoutParams = s3Url.split('?')[0];
+  
+  // Extract S3 key from clean URL
+  const s3KeyWithParams = urlWithoutParams.replace(`https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/`, '');
+  
+  return s3KeyWithParams;
 };
 
 module.exports = {

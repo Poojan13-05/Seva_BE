@@ -5,6 +5,11 @@ const logger = require('../utils/logger');
 const { generateSignedUrl, deleteFileFromS3 } = require('../middleware/upload');
 const { generateSignedUrl: s3GenerateSignedUrl, extractS3Key } = require('../services/s3Sevice');
 
+// Helper function to check if URL is already signed
+const isSignedUrl = (url) => {
+  return url && url.includes('X-Amz-Algorithm');
+};
+
 // Helper function to transform customer URLs to signed URLs
 const transformCustomerUrls = (customer) => {
   const customerObj = customer.toObject ? customer.toObject() : customer;
@@ -13,17 +18,21 @@ const transformCustomerUrls = (customer) => {
     ...customerObj,
     personalDetails: {
       ...customerObj.personalDetails,
-      profilePhoto: customerObj.personalDetails?.profilePhoto 
+      profilePhoto: customerObj.personalDetails?.profilePhoto && !isSignedUrl(customerObj.personalDetails.profilePhoto)
         ? s3GenerateSignedUrl(extractS3Key(customerObj.personalDetails.profilePhoto))
-        : null
+        : customerObj.personalDetails?.profilePhoto
     },
     documents: customerObj.documents?.map(doc => ({
       ...doc,
-      documentUrl: s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+      documentUrl: !isSignedUrl(doc.documentUrl) 
+        ? s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+        : doc.documentUrl
     })) || [],
     additionalDocuments: customerObj.additionalDocuments?.map(doc => ({
       ...doc,
-      documentUrl: s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+      documentUrl: !isSignedUrl(doc.documentUrl)
+        ? s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
+        : doc.documentUrl
     })) || []
   };
 };
