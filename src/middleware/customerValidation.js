@@ -278,6 +278,23 @@ const validateCustomerUpdate = (req, res, next) => {
       }
     }
 
+    // Parse documents arrays
+    if (typeof req.body.documents === 'string') {
+      try {
+        req.body.documents = JSON.parse(req.body.documents);
+      } catch (e) {
+        return errorResponse(res, 'Invalid documents format', 400, ['Documents must be valid JSON']);
+      }
+    }
+
+    if (typeof req.body.additionalDocuments === 'string') {
+      try {
+        req.body.additionalDocuments = JSON.parse(req.body.additionalDocuments);
+      } catch (e) {
+        return errorResponse(res, 'Invalid additional documents format', 400, ['Additional documents must be valid JSON']);
+      }
+    }
+
     const { personalDetails, corporateDetails, familyDetails } = req.body;
     const errors = [];
 
@@ -289,7 +306,7 @@ const validateCustomerUpdate = (req, res, next) => {
       if (personalDetails.mobileNumber && !/^[6-9]\d{9}$/.test(personalDetails.mobileNumber)) {
         errors.push('Please enter a valid Indian mobile number');
       }
-      if (personalDetails.panNumber && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(personalDetails.panNumber)) {
+      if (personalDetails.panNumber && personalDetails.panNumber.trim() && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(personalDetails.panNumber)) {
         errors.push('Please enter a valid PAN number');
       }
       if (personalDetails.gstNumber && personalDetails.gstNumber.trim() && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(personalDetails.gstNumber)) {
@@ -313,7 +330,7 @@ const validateCustomerUpdate = (req, res, next) => {
       if (personalDetails.maritalStatus && !['married', 'unmarried'].includes(personalDetails.maritalStatus)) {
         errors.push('Marital status must be married or unmarried');
       }
-      if (personalDetails.businessOrJob && !['business', 'job'].includes(personalDetails.businessOrJob)) {
+      if (personalDetails.businessOrJob && personalDetails.businessOrJob.trim() && !['business', 'job'].includes(personalDetails.businessOrJob)) {
         errors.push('Business/Job type must be either "business" or "job"');
       }
       if (personalDetails.firstName && personalDetails.firstName.trim().length === 0) {
@@ -382,7 +399,7 @@ const validateCustomerUpdate = (req, res, next) => {
           if (family.relationship && !['husband', 'wife', 'daughter', 'brother', 'sister', 'son', 'mother', 'father', 'mother_in_law', 'father_in_law', 'daughter_in_law', 'nephew', 'other'].includes(family.relationship)) {
             errors.push(`Family member ${index + 1}: Valid relationship is required`);
           }
-          if (family.panNumber && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(family.panNumber)) {
+          if (family.panNumber && family.panNumber.trim() && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(family.panNumber)) {
             errors.push(`Family member ${index + 1}: Please enter a valid PAN number`);
           }
           if (family.mobileNumber && !/^[6-9]\d{9}$/.test(family.mobileNumber)) {
@@ -400,6 +417,15 @@ const validateCustomerUpdate = (req, res, next) => {
           if (family.lastName && family.lastName.trim().length === 0) {
             errors.push(`Family member ${index + 1}: Last name cannot be empty`);
           }
+        }
+      });
+    }
+
+    // Validate additional documents names (only if they exist)
+    if (req.body.additionalDocuments && Array.isArray(req.body.additionalDocuments)) {
+      req.body.additionalDocuments.forEach((doc, index) => {
+        if (doc && (!doc.name || doc.name.trim().length === 0)) {
+          errors.push(`Additional document ${index + 1}: Document name is required`);
         }
       });
     }
@@ -450,7 +476,7 @@ const validateCustomerUpdate = (req, res, next) => {
 
     if (req.body.familyDetails && Array.isArray(req.body.familyDetails)) {
       req.body.familyDetails = req.body.familyDetails.filter(family => {
-        return Object.values(family).some(value => value && value.toString().trim().length > 0);
+        return Object.values(family).some(value => value && value.toString && value.toString().trim().length > 0);
       });
 
       req.body.familyDetails.forEach(family => {
@@ -458,6 +484,13 @@ const validateCustomerUpdate = (req, res, next) => {
         if (family.middleName) family.middleName = family.middleName.trim();
         if (family.lastName) family.lastName = family.lastName.trim();
         if (family.panNumber) family.panNumber = family.panNumber.trim().toUpperCase();
+      });
+    }
+
+    // Sanitize additional document names
+    if (req.body.additionalDocuments && Array.isArray(req.body.additionalDocuments)) {
+      req.body.additionalDocuments.forEach(doc => {
+        if (doc && doc.name) doc.name = doc.name.trim();
       });
     }
 

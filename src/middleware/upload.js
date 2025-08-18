@@ -62,11 +62,14 @@ const getUploadFolder = (fieldname, filename) => {
     case 'profilePhoto':
       return `${baseFolder}/profile-photos`;
     case 'documents':
+    case 'newDocuments': // Add this for new documents during update
       return `${baseFolder}/documents`;
     case 'additionalDocuments':
+    case 'newAdditionalDocuments':
       return `${baseFolder}/additional-documents`;
     default:
-      return `${baseFolder}/misc`;
+      // FIXED: Don't use misc folder, use documents as fallback
+      return `${baseFolder}/documents`;
   }
 };
 
@@ -98,7 +101,35 @@ const s3Storage = multerS3({
 // Enhanced multer configuration for customer documents
 const uploadCustomerDocuments = multer({
   storage: s3Storage,
-  fileFilter: fileFilter,
+  fileFilter: (req, file, cb) => {
+    const allowedFields = ['profilePhoto', 'documents', 'additionalDocuments', 'newDocuments', 'newAdditionalDocuments'];
+    
+    if (!allowedFields.includes(file.fieldname)) {
+      const error = new Error('Unexpected file field');
+      error.code = 'INVALID_FIELD';
+      error.details = `Invalid file field name. Use: ${allowedFields.join(', ')}`;
+      return cb(error, false);
+    }
+
+    // Allow images and documents
+    const allowedMimes = [
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      const error = new Error('Invalid file type');
+      error.code = 'INVALID_FILE_TYPE';
+      error.details = 'Only images (JPEG, PNG) and documents (PDF, DOC, DOCX) are allowed';
+      cb(error, false);
+    }
+  },
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
     files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 15 // Increased for customer docs
@@ -120,7 +151,9 @@ const uploadMiddleware = {
   customerDocuments: uploadCustomerDocuments.fields([
     { name: 'profilePhoto', maxCount: 1 },
     { name: 'documents', maxCount: 10 },
-    { name: 'additionalDocuments', maxCount: 5 }
+    { name: 'additionalDocuments', maxCount: 5 },
+    { name: 'newDocuments', maxCount: 10 },
+    { name: 'newAdditionalDocuments', maxCount: 10 }
   ])
 };
 

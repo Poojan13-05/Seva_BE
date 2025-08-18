@@ -234,7 +234,65 @@ const getCustomerById = async (req, res) => {
 const updateCustomer = async (req, res) => {
   try {
     const { customerId } = req.params;
-    const updateData = req.body;
+    const updateData = { ...req.body }; // Create a copy to avoid modifying req.body directly
+
+    // Get existing customer first
+    const existingCustomer = await Customer.findById(customerId);
+    if (!existingCustomer) {
+      return errorResponse(res, 'Customer not found', 404);
+    }
+
+    // Parse JSON strings if they exist
+    try {
+      if (typeof updateData.personalDetails === 'string') {
+        updateData.personalDetails = JSON.parse(updateData.personalDetails);
+      }
+      if (typeof updateData.corporateDetails === 'string') {
+        updateData.corporateDetails = JSON.parse(updateData.corporateDetails);
+      }
+      if (typeof updateData.familyDetails === 'string') {
+        updateData.familyDetails = JSON.parse(updateData.familyDetails);
+      }
+      if (typeof updateData.documents === 'string') {
+        updateData.documents = JSON.parse(updateData.documents);
+      }
+      if (typeof updateData.additionalDocuments === 'string') {
+        updateData.additionalDocuments = JSON.parse(updateData.additionalDocuments);
+      }
+    } catch (parseError) {
+      logger.error('JSON parsing error:', parseError);
+      return errorResponse(res, 'Invalid JSON data in request', 400);
+    }
+
+    // FIXED: Handle existing documents - properly maintain existing ones without duplicating
+    let finalDocuments = [];
+    if (updateData.documents && Array.isArray(updateData.documents)) {
+      // Keep only existing documents that have valid data
+      finalDocuments = updateData.documents.filter(doc => {
+        return doc.existingUrl && doc.documentType && doc._id;
+      }).map(doc => ({
+        _id: doc._id,
+        documentType: doc.documentType,
+        documentUrl: doc.existingUrl,
+        originalName: doc.existingName || 'Document',
+        fileSize: doc.fileSize
+      }));
+    }
+
+    // FIXED: Handle existing additional documents - properly maintain existing ones without duplicating
+    let finalAdditionalDocuments = [];
+    if (updateData.additionalDocuments && Array.isArray(updateData.additionalDocuments)) {
+      // Keep only existing additional documents that have valid data
+      finalAdditionalDocuments = updateData.additionalDocuments.filter(doc => {
+        return doc.existingUrl && doc.name && doc._id;
+      }).map(doc => ({
+        _id: doc._id,
+        name: doc.name,
+        documentUrl: doc.existingUrl,
+        originalName: doc.existingName || doc.name,
+        fileSize: doc.fileSize
+      }));
+    }
 
     // Handle file uploads if any
     if (req.files) {
@@ -244,46 +302,87 @@ const updateCustomer = async (req, res) => {
         updateData.personalDetails.profilePhoto = req.files.profilePhoto[0].location;
       }
 
-      // Documents - append to existing documents
-      if (req.files.documents && req.files.documents.length > 0) {
-        const newDocuments = req.files.documents.map(file => ({
-          documentType: req.body.documentTypes?.[req.files.documents.indexOf(file)] || 'other',
+      // FIXED: Handle both documents and newDocuments field names
+      const documentsFiles = req.files.newDocuments || req.files.documents;
+      if (documentsFiles && documentsFiles.length > 0) {
+        let documentTypes = req.body.newDocumentTypes || req.body.documentTypes;
+        
+        if (typeof documentTypes === 'string') {
+          documentTypes = [documentTypes];
+        } else if (!Array.isArray(documentTypes)) {
+          documentTypes = [];
+        }
+
+        const newDocuments = documentsFiles.map((file, index) => ({
+          documentType: documentTypes[index] || 'other',
           documentUrl: file.location,
           originalName: file.originalname,
           fileSize: file.size
         }));
         
-        // Get existing customer to append documents
-        const existingCustomer = await Customer.findById(customerId);
-        updateData.documents = [...(existingCustomer?.documents || []), ...newDocuments];
+        finalDocuments = [...finalDocuments, ...newDocuments];
       }
 
-      // Additional documents - append to existing
-      if (req.files.additionalDocuments && req.files.additionalDocuments.length > 0) {
-        // Parse additional document names properly
-        let additionalDocumentNames = req.body.additionalDocumentNames;
+      // FIXED: New additional documents - handle replacement logic properly
+      const additionalDocsFiles = req.files.newAdditionalDocuments || req.files.additionalDocuments;
+      if (additionalDocsFiles && additionalDocsFiles.length > 0) {
+        let additionalDocumentNames = req.body.newAdditionalDocumentNames || req.body.additionalDocumentNames;
         
-        // Handle if it's a string (single item) or array
         if (typeof additionalDocumentNames === 'string') {
           additionalDocumentNames = [additionalDocumentNames];
         } else if (!Array.isArray(additionalDocumentNames)) {
           additionalDocumentNames = [];
         }
 
-        const newAdditionalDocs = req.files.additionalDocuments.map((file, index) => ({
-          name: additionalDocumentNames[index] || file.originalname,
-          documentUrl: file.location,
-          originalName: file.originalname,
-          fileSize: file.size
-        }));
-        
-        const existingCustomer = await Customer.findById(customerId);
-        updateData.additionalDocuments = [...(existingCustomer?.additionalDocuments || []), ...newAdditionalDocs];
+        // Process each new additional document
+        additionalDocsFiles.forEach((file, index) => {
+          const documentName = additionalDocumentNames[index] || file.originalname;
+          
+          // FIXED: Check if this is replacing an existing document
+          const existingDocIndex = finalAdditionalDocuments.findIndex(doc => doc.name === documentName);
+          
+          const newDocument = {
+            name: documentName,
+            documentUrl: file.location,
+            originalName: file.originalname,
+            fileSize: file.size
+          };
+
+          if (existingDocIndex >= 0) {
+            // Replace existing document
+            finalAdditionalDocuments[existingDocIndex] = newDocument;
+          } else {
+            // Add as new document
+            finalAdditionalDocuments.push(newDocument);
+          }
+        });
       }
     }
 
+    // Set the final document arrays
+    updateData.documents = finalDocuments;
+    updateData.additionalDocuments = finalAdditionalDocuments;
+
     // Set last updated by
     updateData.lastUpdatedBy = req.admin._id;
+
+    // Remove any undefined or null values from personalDetails
+    if (updateData.personalDetails) {
+      Object.keys(updateData.personalDetails).forEach(key => {
+        if (updateData.personalDetails[key] === undefined || updateData.personalDetails[key] === null) {
+          delete updateData.personalDetails[key];
+        }
+      });
+    }
+
+    logger.info('Updating customer with data:', {
+      customerId,
+      updateDataKeys: Object.keys(updateData),
+      documentsCount: updateData.documents?.length || 0,
+      additionalDocumentsCount: updateData.additionalDocuments?.length || 0,
+      finalDocuments: finalDocuments.map(doc => ({ type: doc.documentType, url: doc.documentUrl })),
+      finalAdditionalDocuments: finalAdditionalDocuments.map(doc => ({ name: doc.name, url: doc.documentUrl }))
+    });
 
     const customer = await Customer.findByIdAndUpdate(
       customerId,
@@ -296,9 +395,11 @@ const updateCustomer = async (req, res) => {
       return errorResponse(res, 'Customer not found', 404);
     }
 
-    logger.info('Customer updated:', {
+    logger.info('Customer updated successfully:', {
       customerId: customer.customerId,
       updatedBy: req.admin._id,
+      documentsAfterUpdate: customer.documents?.length || 0,
+      additionalDocumentsAfterUpdate: customer.additionalDocuments?.length || 0,
       ip: req.ip
     });
 
@@ -309,6 +410,10 @@ const updateCustomer = async (req, res) => {
     if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(e => e.message);
       return errorResponse(res, 'Validation Error', 400, errors);
+    }
+
+    if (error.name === 'CastError') {
+      return errorResponse(res, 'Invalid customer ID format', 400);
     }
 
     return errorResponse(res, 'Failed to update customer', 500);
