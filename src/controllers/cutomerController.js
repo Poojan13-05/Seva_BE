@@ -7,34 +7,65 @@ const { generateSignedUrl: s3GenerateSignedUrl, extractS3Key } = require('../ser
 
 // Helper function to check if URL is already signed
 const isSignedUrl = (url) => {
-  return url && url.includes('X-Amz-Algorithm');
+  // Always return false to force regeneration of signed URLs for fresh access
+  return false;
 };
 
 // Helper function to transform customer URLs to signed URLs
-const transformCustomerUrls = (customer) => {
+const transformCustomerUrls = async (customer) => {
   const customerObj = customer.toObject ? customer.toObject() : customer;
   
-  return {
-    ...customerObj,
-    personalDetails: {
-      ...customerObj.personalDetails,
-      profilePhoto: customerObj.personalDetails?.profilePhoto && !isSignedUrl(customerObj.personalDetails.profilePhoto)
-        ? s3GenerateSignedUrl(extractS3Key(customerObj.personalDetails.profilePhoto))
-        : customerObj.personalDetails?.profilePhoto
-    },
-    documents: customerObj.documents?.map(doc => ({
-      ...doc,
-      documentUrl: !isSignedUrl(doc.documentUrl) 
-        ? s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
-        : doc.documentUrl
-    })) || [],
-    additionalDocuments: customerObj.additionalDocuments?.map(doc => ({
-      ...doc,
-      documentUrl: !isSignedUrl(doc.documentUrl)
-        ? s3GenerateSignedUrl(extractS3Key(doc.documentUrl))
-        : doc.documentUrl
-    })) || []
-  };
+  try {
+    // Handle profile photo
+    let profilePhoto = customerObj.personalDetails?.profilePhoto;
+    if (profilePhoto && !isSignedUrl(profilePhoto)) {
+      const s3Key = extractS3Key(profilePhoto);
+      if (s3Key) {
+        profilePhoto = await s3GenerateSignedUrl(s3Key);
+      }
+    }
+
+    // Handle documents
+    const documents = await Promise.all(
+      (customerObj.documents || []).map(async (doc) => {
+        if (!isSignedUrl(doc.documentUrl)) {
+          const s3Key = extractS3Key(doc.documentUrl);
+          if (s3Key) {
+            const signedUrl = await s3GenerateSignedUrl(s3Key);
+            return { ...doc, documentUrl: signedUrl || doc.documentUrl };
+          }
+        }
+        return doc;
+      })
+    );
+
+    // Handle additional documents
+    const additionalDocuments = await Promise.all(
+      (customerObj.additionalDocuments || []).map(async (doc) => {
+        if (!isSignedUrl(doc.documentUrl)) {
+          const s3Key = extractS3Key(doc.documentUrl);
+          if (s3Key) {
+            const signedUrl = await s3GenerateSignedUrl(s3Key);
+            return { ...doc, documentUrl: signedUrl || doc.documentUrl };
+          }
+        }
+        return doc;
+      })
+    );
+
+    return {
+      ...customerObj,
+      personalDetails: {
+        ...customerObj.personalDetails,
+        profilePhoto
+      },
+      documents,
+      additionalDocuments
+    };
+  } catch (error) {
+    logger.error('Error transforming customer URLs:', error);
+    return customerObj; // Return original object if transformation fails
+  }
 };
 
 // Create new customer
@@ -94,7 +125,8 @@ const createCustomer = async (req, res) => {
       ip: req.ip
     });
 
-    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer created successfully', 201);
+    const customerWithSignedUrls = await transformCustomerUrls(customer);
+    successResponse(res, { customer: customerWithSignedUrls }, 'Customer created successfully', 201);
   } catch (error) {
     logger.error('Create customer error:', error);
     
@@ -190,8 +222,10 @@ const getCustomers = async (req, res) => {
       ip: req.ip
     });
 
-    // Transform customers with signed URLs
-    const customersWithSignedUrls = customers.map(transformCustomerUrls);
+    // Transform customers with signed URLs (now async)
+    const customersWithSignedUrls = await Promise.all(
+      customers.map(customer => transformCustomerUrls(customer))
+    );
 
     successResponse(res, {
       customers: customersWithSignedUrls,
@@ -223,7 +257,8 @@ const getCustomerById = async (req, res) => {
       return errorResponse(res, 'Customer not found', 404);
     }
 
-    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer retrieved successfully', 200);
+    const customerWithSignedUrls = await transformCustomerUrls(customer);
+    successResponse(res, { customer: customerWithSignedUrls }, 'Customer retrieved successfully', 200);
   } catch (error) {
     logger.error('Get customer by ID error:', error);
     return errorResponse(res, 'Failed to retrieve customer', 500);
@@ -403,7 +438,8 @@ const updateCustomer = async (req, res) => {
       ip: req.ip
     });
 
-    successResponse(res, { customer: transformCustomerUrls(customer) }, 'Customer updated successfully', 200);
+    const customerWithSignedUrls = await transformCustomerUrls(customer);
+    successResponse(res, { customer: customerWithSignedUrls }, 'Customer updated successfully', 200);
   } catch (error) {
     logger.error('Update customer error:', error);
     
