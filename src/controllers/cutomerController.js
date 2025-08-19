@@ -3,7 +3,7 @@ const Customer = require('../models/Customer');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const logger = require('../utils/logger');
 const { generateSignedUrl, deleteFileFromS3 } = require('../middleware/upload');
-const { generateSignedUrl: s3GenerateSignedUrl, extractS3Key } = require('../services/s3Sevice');
+const { generateSignedUrl: s3GenerateSignedUrl, extractS3Key, deleteMultipleFilesFromS3, extractS3KeyEnhanced } = require('../services/s3Sevice');
 
 // Helper function to check if URL is already signed
 const isSignedUrl = (url) => {
@@ -269,13 +269,16 @@ const getCustomerById = async (req, res) => {
 const updateCustomer = async (req, res) => {
   try {
     const { customerId } = req.params;
-    const updateData = { ...req.body }; // Create a copy to avoid modifying req.body directly
+    const updateData = { ...req.body };
 
     // Get existing customer first
     const existingCustomer = await Customer.findById(customerId);
     if (!existingCustomer) {
       return errorResponse(res, 'Customer not found', 404);
     }
+
+    // PHASE 1: Collect files to be deleted from S3
+    const filesToDeleteFromS3 = [];
 
     // Parse JSON strings if they exist
     try {
@@ -294,15 +297,59 @@ const updateCustomer = async (req, res) => {
       if (typeof updateData.additionalDocuments === 'string') {
         updateData.additionalDocuments = JSON.parse(updateData.additionalDocuments);
       }
+
+      // PHASE 1: Parse deleted files information
+      let deletedDocuments = [];
+      let deletedAdditionalDocuments = [];
+      let deletedProfilePhoto = null;
+
+      if (updateData.deletedDocuments && typeof updateData.deletedDocuments === 'string') {
+        deletedDocuments = JSON.parse(updateData.deletedDocuments);
+      }
+      if (updateData.deletedAdditionalDocuments && typeof updateData.deletedAdditionalDocuments === 'string') {
+        deletedAdditionalDocuments = JSON.parse(updateData.deletedAdditionalDocuments);
+      }
+      if (updateData.deletedProfilePhoto) {
+        deletedProfilePhoto = updateData.deletedProfilePhoto;
+      }
+
+      // Collect S3 keys for files to be deleted
+      deletedDocuments.forEach(doc => {
+        const s3Key = extractS3KeyEnhanced(doc.documentUrl);
+        if (s3Key) filesToDeleteFromS3.push(s3Key);
+      });
+
+      deletedAdditionalDocuments.forEach(doc => {
+        const s3Key = extractS3KeyEnhanced(doc.documentUrl);
+        if (s3Key) filesToDeleteFromS3.push(s3Key);
+      });
+
+      if (deletedProfilePhoto) {
+        const s3Key = extractS3KeyEnhanced(deletedProfilePhoto);
+        if (s3Key) filesToDeleteFromS3.push(s3Key);
+      }
+
     } catch (parseError) {
       logger.error('JSON parsing error:', parseError);
       return errorResponse(res, 'Invalid JSON data in request', 400);
     }
 
-    // FIXED: Handle existing documents - properly maintain existing ones without duplicating
+    // PHASE 2: Handle profile photo replacement
+    if (req.files && req.files.profilePhoto && req.files.profilePhoto[0]) {
+      // If replacing profile photo, add old one to deletion list
+      if (existingCustomer.personalDetails?.profilePhoto) {
+        const oldProfilePhotoKey = extractS3KeyEnhanced(existingCustomer.personalDetails.profilePhoto);
+        if (oldProfilePhotoKey && !filesToDeleteFromS3.includes(oldProfilePhotoKey)) {
+          filesToDeleteFromS3.push(oldProfilePhotoKey);
+        }
+      }
+      updateData.personalDetails = updateData.personalDetails || {};
+      updateData.personalDetails.profilePhoto = req.files.profilePhoto[0].location;
+    }
+
+    // Handle existing documents - properly maintain existing ones without duplicating
     let finalDocuments = [];
     if (updateData.documents && Array.isArray(updateData.documents)) {
-      // Keep only existing documents that have valid data
       finalDocuments = updateData.documents.filter(doc => {
         return doc.existingUrl && doc.documentType && doc._id;
       }).map(doc => ({
@@ -314,10 +361,9 @@ const updateCustomer = async (req, res) => {
       }));
     }
 
-    // FIXED: Handle existing additional documents - properly maintain existing ones without duplicating
+    // Handle existing additional documents - properly maintain existing ones without duplicating
     let finalAdditionalDocuments = [];
     if (updateData.additionalDocuments && Array.isArray(updateData.additionalDocuments)) {
-      // Keep only existing additional documents that have valid data
       finalAdditionalDocuments = updateData.additionalDocuments.filter(doc => {
         return doc.existingUrl && doc.name && doc._id;
       }).map(doc => ({
@@ -331,13 +377,7 @@ const updateCustomer = async (req, res) => {
 
     // Handle file uploads if any
     if (req.files) {
-      // Profile photo
-      if (req.files.profilePhoto && req.files.profilePhoto[0]) {
-        updateData.personalDetails = updateData.personalDetails || {};
-        updateData.personalDetails.profilePhoto = req.files.profilePhoto[0].location;
-      }
-
-      // FIXED: Handle both documents and newDocuments field names
+      // FIXED: Handle new documents - check if replacing existing ones
       const documentsFiles = req.files.newDocuments || req.files.documents;
       if (documentsFiles && documentsFiles.length > 0) {
         let documentTypes = req.body.newDocumentTypes || req.body.documentTypes;
@@ -348,17 +388,41 @@ const updateCustomer = async (req, res) => {
           documentTypes = [];
         }
 
-        const newDocuments = documentsFiles.map((file, index) => ({
-          documentType: documentTypes[index] || 'other',
-          documentUrl: file.location,
-          originalName: file.originalname,
-          fileSize: file.size
-        }));
-        
-        finalDocuments = [...finalDocuments, ...newDocuments];
+        documentsFiles.forEach((file, index) => {
+          const documentType = documentTypes[index] || 'other';
+          
+          // FIXED: Check if this document type already exists and is being replaced
+          const existingDocIndex = finalDocuments.findIndex(doc => doc.documentType === documentType);
+          
+          if (existingDocIndex >= 0) {
+            // FIXED: Add the old document to deletion list before replacing
+            const oldDocUrl = finalDocuments[existingDocIndex].documentUrl;
+            const oldS3Key = extractS3KeyEnhanced(oldDocUrl);
+            if (oldS3Key && !filesToDeleteFromS3.includes(oldS3Key)) {
+              filesToDeleteFromS3.push(oldS3Key);
+            }
+            
+            // Replace existing document
+            finalDocuments[existingDocIndex] = {
+              _id: finalDocuments[existingDocIndex]._id, // Keep the same ID
+              documentType: documentType,
+              documentUrl: file.location,
+              originalName: file.originalname,
+              fileSize: file.size
+            };
+          } else {
+            // Add as new document
+            finalDocuments.push({
+              documentType: documentType,
+              documentUrl: file.location,
+              originalName: file.originalname,
+              fileSize: file.size
+            });
+          }
+        });
       }
 
-      // FIXED: New additional documents - handle replacement logic properly
+      // FIXED: Handle additional documents with better replacement logic
       const additionalDocsFiles = req.files.newAdditionalDocuments || req.files.additionalDocuments;
       if (additionalDocsFiles && additionalDocsFiles.length > 0) {
         let additionalDocumentNames = req.body.newAdditionalDocumentNames || req.body.additionalDocumentNames;
@@ -373,22 +437,33 @@ const updateCustomer = async (req, res) => {
         additionalDocsFiles.forEach((file, index) => {
           const documentName = additionalDocumentNames[index] || file.originalname;
           
-          // FIXED: Check if this is replacing an existing document
+          // FIXED: Check if this document name already exists and is being replaced
           const existingDocIndex = finalAdditionalDocuments.findIndex(doc => doc.name === documentName);
           
-          const newDocument = {
-            name: documentName,
-            documentUrl: file.location,
-            originalName: file.originalname,
-            fileSize: file.size
-          };
-
           if (existingDocIndex >= 0) {
+            // FIXED: Add the old document to deletion list before replacing
+            const oldDocUrl = finalAdditionalDocuments[existingDocIndex].documentUrl;
+            const oldS3Key = extractS3KeyEnhanced(oldDocUrl);
+            if (oldS3Key && !filesToDeleteFromS3.includes(oldS3Key)) {
+              filesToDeleteFromS3.push(oldS3Key);
+            }
+            
             // Replace existing document
-            finalAdditionalDocuments[existingDocIndex] = newDocument;
+            finalAdditionalDocuments[existingDocIndex] = {
+              _id: finalAdditionalDocuments[existingDocIndex]._id, // Keep the same ID
+              name: documentName,
+              documentUrl: file.location,
+              originalName: file.originalname,
+              fileSize: file.size
+            };
           } else {
             // Add as new document
-            finalAdditionalDocuments.push(newDocument);
+            finalAdditionalDocuments.push({
+              name: documentName,
+              documentUrl: file.location,
+              originalName: file.originalname,
+              fileSize: file.size
+            });
           }
         });
       }
@@ -415,10 +490,13 @@ const updateCustomer = async (req, res) => {
       updateDataKeys: Object.keys(updateData),
       documentsCount: updateData.documents?.length || 0,
       additionalDocumentsCount: updateData.additionalDocuments?.length || 0,
+      filesToDelete: filesToDeleteFromS3.length,
+      filesToDeleteList: filesToDeleteFromS3, // ADDED: Log the actual files being deleted
       finalDocuments: finalDocuments.map(doc => ({ type: doc.documentType, url: doc.documentUrl })),
       finalAdditionalDocuments: finalAdditionalDocuments.map(doc => ({ name: doc.name, url: doc.documentUrl }))
     });
 
+    // Update database first (safer approach)
     const customer = await Customer.findByIdAndUpdate(
       customerId,
       updateData,
@@ -430,11 +508,36 @@ const updateCustomer = async (req, res) => {
       return errorResponse(res, 'Customer not found', 404);
     }
 
+    // PHASE 2: Delete old files from S3 after successful database update
+    if (filesToDeleteFromS3.length > 0) {
+      try {
+        logger.info('Starting S3 cleanup for files:', filesToDeleteFromS3);
+        const deleteResults = await deleteMultipleFilesFromS3(filesToDeleteFromS3);
+        const failedDeletions = deleteResults.filter(result => !result.success);
+        
+        if (failedDeletions.length > 0) {
+          logger.warn('Some S3 files failed to delete:', failedDeletions);
+          // Continue execution - this is not critical to the update operation
+        }
+        
+        logger.info('S3 cleanup completed:', {
+          total: deleteResults.length,
+          successful: deleteResults.length - failedDeletions.length,
+          failed: failedDeletions.length,
+          successfulDeletions: deleteResults.filter(result => result.success).map(result => result.key)
+        });
+      } catch (s3Error) {
+        logger.error('S3 cleanup error:', s3Error);
+        // Don't fail the entire operation due to S3 cleanup issues
+      }
+    }
+
     logger.info('Customer updated successfully:', {
       customerId: customer.customerId,
       updatedBy: req.admin._id,
       documentsAfterUpdate: customer.documents?.length || 0,
       additionalDocumentsAfterUpdate: customer.additionalDocuments?.length || 0,
+      s3FilesDeleted: filesToDeleteFromS3.length,
       ip: req.ip
     });
 
@@ -453,6 +556,62 @@ const updateCustomer = async (req, res) => {
     }
 
     return errorResponse(res, 'Failed to update customer', 500);
+  }
+};
+
+// PHASE 1: Enhanced delete document function with better S3 key extraction
+const deleteDocument = async (req, res) => {
+  try {
+    const { customerId, documentId } = req.params;
+    const { documentType } = req.query; // 'documents' or 'additionalDocuments'
+
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return errorResponse(res, 'Customer not found', 404);
+    }
+
+    let documentArray = documentType === 'additionalDocuments' ? 
+      customer.additionalDocuments : customer.documents;
+    
+    const documentIndex = documentArray.findIndex(doc => doc._id.toString() === documentId);
+    
+    if (documentIndex === -1) {
+      return errorResponse(res, 'Document not found', 404);
+    }
+
+    const document = documentArray[documentIndex];
+    
+    // PHASE 1: Enhanced S3 deletion with better key extraction
+    try {
+      const s3Key = extractS3KeyEnhanced(document.documentUrl);
+      if (s3Key) {
+        await deleteFileFromS3(s3Key);
+        logger.info('File deleted from S3:', s3Key);
+      } else {
+        logger.warn('Could not extract S3 key from URL:', document.documentUrl);
+      }
+    } catch (s3Error) {
+      logger.warn('Failed to delete file from S3:', s3Error);
+      // Continue with database deletion even if S3 deletion fails
+    }
+
+    // Remove from array
+    documentArray.splice(documentIndex, 1);
+    customer.lastUpdatedBy = req.admin._id;
+    await customer.save();
+
+    logger.info('Document deleted:', {
+      customerId: customer.customerId,
+      documentId,
+      deletedBy: req.admin._id,
+      ip: req.ip
+    });
+
+    successResponse(res, null, 'Document deleted successfully', 200);
+  } catch (error) {
+    logger.error('Delete document error:', error);
+    return errorResponse(res, 'Failed to delete document', 500);
   }
 };
 
@@ -578,57 +737,6 @@ const exportCustomers = async (req, res) => {
   } catch (error) {
     logger.error('Export customers error:', error);
     return errorResponse(res, 'Failed to export customer data', 500);
-  }
-};
-
-// Delete document from customer
-const deleteDocument = async (req, res) => {
-  try {
-    const { customerId, documentId } = req.params;
-    const { documentType } = req.query; // 'documents' or 'additionalDocuments'
-
-    const customer = await Customer.findById(customerId);
-    
-    if (!customer) {
-      return errorResponse(res, 'Customer not found', 404);
-    }
-
-    let documentArray = documentType === 'additionalDocuments' ? 
-      customer.additionalDocuments : customer.documents;
-    
-    const documentIndex = documentArray.findIndex(doc => doc._id.toString() === documentId);
-    
-    if (documentIndex === -1) {
-      return errorResponse(res, 'Document not found', 404);
-    }
-
-    const document = documentArray[documentIndex];
-    
-    // Delete from S3
-    try {
-      const s3Key = document.documentUrl.split('/').pop(); // Extract key from URL
-      await deleteFileFromS3(s3Key);
-    } catch (s3Error) {
-      logger.warn('Failed to delete file from S3:', s3Error);
-      // Continue with database deletion even if S3 deletion fails
-    }
-
-    // Remove from array
-    documentArray.splice(documentIndex, 1);
-    customer.lastUpdatedBy = req.admin._id;
-    await customer.save();
-
-    logger.info('Document deleted:', {
-      customerId: customer.customerId,
-      documentId,
-      deletedBy: req.admin._id,
-      ip: req.ip
-    });
-
-    successResponse(res, null, 'Document deleted successfully', 200);
-  } catch (error) {
-    logger.error('Delete document error:', error);
-    return errorResponse(res, 'Failed to delete document', 500);
   }
 };
 
