@@ -9,7 +9,10 @@ const {
   updateAdmin,
   toggleAdminStatus,
   resetAdminPassword,
-  deleteAdmin
+  deleteAdmin,
+  getDeletedCustomers,  // NEW
+  permanentlyDeleteCustomer, // NEW
+  getDeletedCustomerStats // NEW
 } = require('../controllers/superAdminController');
 const { authenticate } = require('../middleware/auth');
 const { 
@@ -35,5 +38,10 @@ router.put('/admins/:adminId', validateAdminUpdate, updateAdmin);
 router.patch('/admins/:adminId/toggle-status', toggleAdminStatus);
 router.patch('/admins/:adminId/reset-password', validatePasswordReset, resetAdminPassword);
 router.delete('/admins/:adminId', deleteAdmin);
+
+// Customer Management (only for super admin)
+router.get('/customers/deleted', getDeletedCustomers);
+router.get('/customers/deleted/stats', getDeletedCustomerStats);
+router.delete('/customers/:customerId/permanent', permanentlyDeleteCustomer);
 
 module.exports = router;

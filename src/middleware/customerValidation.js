@@ -30,8 +30,30 @@ const validateCustomerCreation = (req, res, next) => {
       }
     }
 
+    // Parse documentTypes array
+    if (req.body.documentTypes) {
+      if (typeof req.body.documentTypes === 'string') {
+        try {
+          req.body.documentTypes = JSON.parse(req.body.documentTypes);
+        } catch (e) {
+          // If not JSON, try splitting by comma
+          req.body.documentTypes = req.body.documentTypes.split(',').map(type => type.trim());
+        }
+      }
+    }
+
     const { customerType, personalDetails, corporateDetails, familyDetails } = req.body;
     const errors = [];
+
+    // Validate documentTypes if provided
+    if (req.body.documentTypes && Array.isArray(req.body.documentTypes)) {
+      const validDocumentTypes = ['aadhaar_card', 'pan_card', 'driving_license', 'mediclaim', 'rc_book', 'other'];
+      req.body.documentTypes.forEach((docType, index) => {
+        if (docType && !validDocumentTypes.includes(docType)) {
+          errors.push(`Document type "${docType}" at position ${index + 1} is not valid. Valid types are: ${validDocumentTypes.join(', ')}`);
+        }
+      });
+    }
 
     // Customer type validation
     if (!customerType || !['individual', 'corporate'].includes(customerType)) {
@@ -295,8 +317,48 @@ const validateCustomerUpdate = (req, res, next) => {
       }
     }
 
+    // Parse documentTypes arrays for update
+    if (req.body.documentTypes) {
+      if (typeof req.body.documentTypes === 'string') {
+        try {
+          req.body.documentTypes = JSON.parse(req.body.documentTypes);
+        } catch (e) {
+          req.body.documentTypes = req.body.documentTypes.split(',').map(type => type.trim());
+        }
+      }
+    }
+
+    if (req.body.newDocumentTypes) {
+      if (typeof req.body.newDocumentTypes === 'string') {
+        try {
+          req.body.newDocumentTypes = JSON.parse(req.body.newDocumentTypes);
+        } catch (e) {
+          req.body.newDocumentTypes = req.body.newDocumentTypes.split(',').map(type => type.trim());
+        }
+      }
+    }
+
     const { personalDetails, corporateDetails, familyDetails } = req.body;
     const errors = [];
+
+    // Validate documentTypes if provided
+    const validDocumentTypes = ['aadhaar_card', 'pan_card', 'driving_license', 'mediclaim', 'rc_book', 'other'];
+    
+    if (req.body.documentTypes && Array.isArray(req.body.documentTypes)) {
+      req.body.documentTypes.forEach((docType, index) => {
+        if (docType && !validDocumentTypes.includes(docType)) {
+          errors.push(`Document type "${docType}" at position ${index + 1} is not valid. Valid types are: ${validDocumentTypes.join(', ')}`);
+        }
+      });
+    }
+
+    if (req.body.newDocumentTypes && Array.isArray(req.body.newDocumentTypes)) {
+      req.body.newDocumentTypes.forEach((docType, index) => {
+        if (docType && !validDocumentTypes.includes(docType)) {
+          errors.push(`New document type "${docType}" at position ${index + 1} is not valid. Valid types are: ${validDocumentTypes.join(', ')}`);
+        }
+      });
+    }
 
     // Personal details validation (if provided)
     if (personalDetails) {

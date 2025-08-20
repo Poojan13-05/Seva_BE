@@ -83,8 +83,22 @@ const createCustomer = async (req, res) => {
 
       // Documents
       if (req.files.documents && req.files.documents.length > 0) {
-        customerData.documents = req.files.documents.map(file => ({
-          documentType: req.body.documentTypes?.[req.files.documents.indexOf(file)] || 'other',
+        // Parse documentTypes properly - handle both string and array cases
+        let documentTypes = req.body.documentTypes;
+        
+        if (typeof documentTypes === 'string') {
+          // If it's a single string, try to parse as JSON first, then split by comma
+          try {
+            documentTypes = JSON.parse(documentTypes);
+          } catch (e) {
+            documentTypes = documentTypes.split(',').map(type => type.trim());
+          }
+        } else if (!Array.isArray(documentTypes)) {
+          documentTypes = [];
+        }
+
+        customerData.documents = req.files.documents.map((file, index) => ({
+          documentType: documentTypes[index] || 'other',
           documentUrl: file.location,
           originalName: file.originalname,
           fileSize: file.size

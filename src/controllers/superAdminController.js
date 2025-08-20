@@ -1,6 +1,8 @@
 const Admin = require('../models/Admin');
+const Customer = require('../models/Customer');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const logger = require('../utils/logger');
+const { deleteMultipleFilesFromS3, extractS3KeyEnhanced } = require('../services/s3Sevice');
 
 const createAdmin = async (req, res) => {
   try {
@@ -447,6 +449,243 @@ const deleteAdmin = async (req, res) => {
   }
 };
 
+// Get all inactive/deleted customers (only for super admin)
+const getDeletedCustomers = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can view deleted customers', 403);
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      customerType = 'all',
+      sortBy = 'updatedAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build search query for inactive customers
+    const searchQuery = { isActive: false };
+
+    // Add search functionality
+    if (search.trim()) {
+      searchQuery.$or = [
+        { customerId: { $regex: search, $options: 'i' } },
+        { 'personalDetails.firstName': { $regex: search, $options: 'i' } },
+        { 'personalDetails.lastName': { $regex: search, $options: 'i' } },
+        { 'personalDetails.email': { $regex: search, $options: 'i' } },
+        { 'personalDetails.mobileNumber': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Add customer type filter
+    if (customerType !== 'all') {
+      searchQuery.customerType = customerType;
+    }
+
+    // Calculate pagination
+    const pageNumber = Math.max(1, parseInt(page));
+    const limitNumber = Math.max(1, Math.min(100, parseInt(limit)));
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Build sort object
+    const sortObject = {};
+    sortObject[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Execute queries
+    const [customers, totalCount] = await Promise.all([
+      Customer.find(searchQuery)
+        .populate('createdBy', 'name email')
+        .populate('lastUpdatedBy', 'name email')
+        .sort(sortObject)
+        .skip(skip)
+        .limit(limitNumber),
+      Customer.countDocuments(searchQuery)
+    ]);
+
+    // Calculate pagination info
+    const totalPages = Math.ceil(totalCount / limitNumber);
+    const hasNextPage = pageNumber < totalPages;
+    const hasPrevPage = pageNumber > 1;
+
+    const pagination = {
+      currentPage: pageNumber,
+      totalPages,
+      totalCount,
+      limit: limitNumber,
+      hasNextPage,
+      hasPrevPage,
+      nextPage: hasNextPage ? pageNumber + 1 : null,
+      prevPage: hasPrevPage ? pageNumber - 1 : null
+    };
+
+    logger.info('Deleted customers retrieved:', {
+      requestedBy: req.admin._id,
+      totalCount,
+      page: pageNumber,
+      search: search || 'none',
+      customerType,
+      ip: req.ip
+    });
+
+    successResponse(res, {
+      customers,
+      pagination,
+      filters: {
+        search,
+        customerType,
+        sortBy,
+        sortOrder
+      }
+    }, 'Deleted customers retrieved successfully', 200);
+
+  } catch (error) {
+    logger.error('Get deleted customers error:', error);
+    return errorResponse(res, 'Failed to retrieve deleted customers', 500);
+  }
+};
+
+// Permanently delete customer and all associated files (only for super admin)
+const permanentlyDeleteCustomer = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can permanently delete customers', 403);
+    }
+
+    const { customerId } = req.params;
+
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return errorResponse(res, 'Customer not found', 404);
+    }
+
+    // Only allow permanent deletion of inactive customers
+    if (customer.isActive) {
+      return errorResponse(res, 'Customer must be inactive to be permanently deleted', 400);
+    }
+
+    // Collect all S3 files to be deleted
+    const filesToDeleteFromS3 = [];
+
+    // Collect profile photo
+    if (customer.personalDetails?.profilePhoto) {
+      const s3Key = extractS3KeyEnhanced(customer.personalDetails.profilePhoto);
+      if (s3Key) filesToDeleteFromS3.push(s3Key);
+    }
+
+    // Collect documents
+    customer.documents?.forEach(doc => {
+      const s3Key = extractS3KeyEnhanced(doc.documentUrl);
+      if (s3Key) filesToDeleteFromS3.push(s3Key);
+    });
+
+    // Collect additional documents
+    customer.additionalDocuments?.forEach(doc => {
+      const s3Key = extractS3KeyEnhanced(doc.documentUrl);
+      if (s3Key) filesToDeleteFromS3.push(s3Key);
+    });
+
+    // Delete files from S3 first
+    let s3DeletionResults = [];
+    if (filesToDeleteFromS3.length > 0) {
+      try {
+        logger.info('Starting S3 cleanup for permanent customer deletion:', {
+          customerId: customer.customerId,
+          filesToDelete: filesToDeleteFromS3,
+          deletedBy: req.admin._id
+        });
+        
+        s3DeletionResults = await deleteMultipleFilesFromS3(filesToDeleteFromS3);
+        const failedDeletions = s3DeletionResults.filter(result => !result.success);
+        
+        if (failedDeletions.length > 0) {
+          logger.warn('Some S3 files failed to delete during permanent customer deletion:', {
+            customerId: customer.customerId,
+            failedFiles: failedDeletions
+          });
+        }
+        
+        logger.info('S3 cleanup completed for customer:', {
+          customerId: customer.customerId,
+          totalFiles: s3DeletionResults.length,
+          successful: s3DeletionResults.length - failedDeletions.length,
+          failed: failedDeletions.length
+        });
+      } catch (s3Error) {
+        logger.error('S3 cleanup error during permanent customer deletion:', s3Error);
+        // Continue with database deletion even if S3 cleanup fails
+      }
+    }
+
+    // Delete customer from database
+    await Customer.findByIdAndDelete(customerId);
+
+    logger.info('Customer permanently deleted:', {
+      customerId: customer.customerId,
+      customerEmail: customer.personalDetails?.email,
+      deletedBy: req.admin._id,
+      s3FilesDeleted: filesToDeleteFromS3.length,
+      s3DeletionSuccess: s3DeletionResults.filter(r => r.success).length,
+      s3DeletionFailed: s3DeletionResults.filter(r => !r.success).length,
+      ip: req.ip
+    });
+
+    successResponse(res, {
+      deletedCustomer: {
+        customerId: customer.customerId,
+        customerType: customer.customerType,
+        email: customer.personalDetails?.email
+      },
+      s3FilesDeleted: s3DeletionResults.filter(r => r.success).length,
+      s3FilesFailed: s3DeletionResults.filter(r => !r.success).length
+    }, 'Customer permanently deleted successfully', 200);
+    
+  } catch (error) {
+    logger.error('Permanent delete customer error:', error);
+    return errorResponse(res, 'Failed to permanently delete customer', 500);
+  }
+};
+
+// Get deleted customer statistics (only for super admin)
+const getDeletedCustomerStats = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can view deleted customer statistics', 403);
+    }
+
+    const [
+      totalDeletedCustomers,
+      deletedIndividualCustomers,
+      deletedCorporateCustomers,
+      recentlyDeletedCustomers
+    ] = await Promise.all([
+      Customer.countDocuments({ isActive: false }),
+      Customer.countDocuments({ customerType: 'individual', isActive: false }),
+      Customer.countDocuments({ customerType: 'corporate', isActive: false }),
+      Customer.countDocuments({
+        isActive: false,
+        updatedAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      })
+    ]);
+
+    const stats = {
+      totalDeletedCustomers,
+      deletedIndividualCustomers,
+      deletedCorporateCustomers,
+      recentlyDeletedCustomers,
+      individualPercentage: totalDeletedCustomers > 0 ? Math.round((deletedIndividualCustomers / totalDeletedCustomers) * 100) : 0,
+      corporatePercentage: totalDeletedCustomers > 0 ? Math.round((deletedCorporateCustomers / totalDeletedCustomers) * 100) : 0
+    };
+
+    successResponse(res, { stats }, 'Deleted customer statistics retrieved successfully', 200);
+  } catch (error) {
+    logger.error('Get deleted customer stats error:', error);
+    return errorResponse(res, 'Failed to retrieve deleted customer statistics', 500);
+  }
+};
+
 module.exports = {
   createAdmin,
   getAllAdmins,
@@ -456,5 +695,8 @@ module.exports = {
   updateAdmin,
   toggleAdminStatus,
   resetAdminPassword,
-  deleteAdmin
+  deleteAdmin,
+  getDeletedCustomers,  // NEW
+  permanentlyDeleteCustomer, // NEW
+  getDeletedCustomerStats // NEW
 };

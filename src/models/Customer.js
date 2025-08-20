@@ -387,21 +387,15 @@ customerSchema.pre('save', async function(next) {
       let customerId;
       
       while (!isUnique) {
-        // Generate customer ID with format: SE + 4 random uppercase letters + 6 random numbers
-        const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        // Generate customer ID with format: SEVA-(6 digit numbers)
         const numbers = '0123456789';
-        
-        let letterPart = '';
-        for (let i = 0; i < 4; i++) {
-          letterPart += letters.charAt(Math.floor(Math.random() * letters.length));
-        }
         
         let numberPart = '';
         for (let i = 0; i < 6; i++) {
           numberPart += numbers.charAt(Math.floor(Math.random() * numbers.length));
         }
         
-        customerId = `SE${letterPart}${numberPart}`;
+        customerId = `SEVA-${numberPart}`;
         
         // Check if this ID already exists
         const existingCustomer = await this.constructor.findOne({ customerId });
