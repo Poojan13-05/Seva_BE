@@ -67,6 +67,11 @@ const getUploadFolder = (fieldname, filename) => {
     case 'additionalDocuments':
     case 'newAdditionalDocuments':
       return `${baseFolder}/additional-documents`;
+    case 'policyFile':
+      return 'life-insurance/policy-files';
+    case 'uploadDocuments':
+    case 'newUploadDocuments':
+      return 'life-insurance/documents';
     default:
       // FIXED: Don't use misc folder, use documents as fallback
       return `${baseFolder}/documents`;
@@ -136,6 +141,44 @@ const uploadCustomerDocuments = multer({
   }
 });
 
+// Enhanced multer configuration for life insurance documents
+const uploadLifeInsuranceDocuments = multer({
+  storage: s3Storage,
+  fileFilter: (req, file, cb) => {
+    const allowedFields = ['policyFile', 'uploadDocuments', 'newUploadDocuments'];
+    
+    if (!allowedFields.includes(file.fieldname)) {
+      const error = new Error('Unexpected file field');
+      error.code = 'INVALID_FIELD';
+      error.details = `Invalid file field name. Use: ${allowedFields.join(', ')}`;
+      return cb(error, false);
+    }
+
+    // Allow images and documents
+    const allowedMimes = [
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      const error = new Error('Invalid file type');
+      error.code = 'INVALID_FILE_TYPE';
+      error.details = 'Only images (JPEG, PNG) and documents (PDF, DOC, DOCX) are allowed';
+      cb(error, false);
+    }
+  },
+  limits: {
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
+    files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 15 // Increased for life insurance docs
+  }
+});
+
 // Middleware for different upload types
 const uploadMiddleware = {
   // Single profile photo
@@ -154,6 +197,13 @@ const uploadMiddleware = {
     { name: 'additionalDocuments', maxCount: 5 },
     { name: 'newDocuments', maxCount: 10 },
     { name: 'newAdditionalDocuments', maxCount: 10 }
+  ]),
+  
+  // Life insurance document uploads
+  lifeInsuranceDocuments: uploadLifeInsuranceDocuments.fields([
+    { name: 'policyFile', maxCount: 1 },
+    { name: 'uploadDocuments', maxCount: 10 },
+    { name: 'newUploadDocuments', maxCount: 10 }
   ])
 };
 

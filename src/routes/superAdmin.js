@@ -12,7 +12,10 @@ const {
   deleteAdmin,
   getDeletedCustomers,  // NEW
   permanentlyDeleteCustomer, // NEW
-  getDeletedCustomerStats // NEW
+  getDeletedCustomerStats, // NEW
+  getDeletedLifeInsurancePolicies, // NEW
+  getDeletedLifeInsuranceStats, // NEW
+  permanentlyDeleteLifeInsurancePolicy // NEW
 } = require('../controllers/superAdminController');
 const { authenticate } = require('../middleware/auth');
 const { 
@@ -43,5 +46,10 @@ router.delete('/admins/:adminId', deleteAdmin);
 router.get('/customers/deleted', getDeletedCustomers);
 router.get('/customers/deleted/stats', getDeletedCustomerStats);
 router.delete('/customers/:customerId/permanent', permanentlyDeleteCustomer);
+
+// Life Insurance Management (only for super admin)
+router.get('/life-insurance/deleted', getDeletedLifeInsurancePolicies);
+router.get('/life-insurance/deleted/stats', getDeletedLifeInsuranceStats);
+router.delete('/life-insurance/:policyId/permanent', permanentlyDeleteLifeInsurancePolicy);
 
 module.exports = router;

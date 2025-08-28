@@ -1,5 +1,6 @@
 const Admin = require('../models/Admin');
 const Customer = require('../models/Customer');
+const LifeInsurance = require('../models/LifeInsurance');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const logger = require('../utils/logger');
 const { deleteMultipleFilesFromS3, extractS3KeyEnhanced } = require('../services/s3Sevice');
@@ -686,6 +687,213 @@ const getDeletedCustomerStats = async (req, res) => {
   }
 };
 
+// Get deleted life insurance policies
+const getDeletedLifeInsurancePolicies = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can view deleted life insurance policies', 403);
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      insuranceCompany = 'all',
+      policyType = 'all',
+      sortBy = 'updatedAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build search query for inactive policies
+    const searchQuery = { isActive: false };
+
+    // Add search functionality
+    if (search.trim()) {
+      searchQuery.$or = [
+        { 'insuranceDetails.policyNumber': { $regex: search, $options: 'i' } },
+        { 'clientDetails.insuredName': { $regex: search, $options: 'i' } },
+        { 'insuranceDetails.planName': { $regex: search, $options: 'i' } },
+        { 'nomineeDetails.nomineeName': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Add insurance company filter
+    if (insuranceCompany !== 'all') {
+      searchQuery['insuranceDetails.insuranceCompany'] = insuranceCompany;
+    }
+
+    // Add policy type filter
+    if (policyType !== 'all') {
+      searchQuery['insuranceDetails.policyType'] = policyType;
+    }
+
+    // Calculate pagination
+    const pageNumber = Math.max(1, parseInt(page));
+    const limitNumber = Math.max(1, Math.min(100, parseInt(limit)));
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Build sort object
+    const sortObject = {};
+    sortObject[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Execute queries
+    const [policies, totalCount] = await Promise.all([
+      LifeInsurance.find(searchQuery)
+        .populate('clientDetails.customer', 'customerId personalDetails.firstName personalDetails.lastName personalDetails.email personalDetails.mobileNumber')
+        .populate('createdBy', 'name email')
+        .populate('lastUpdatedBy', 'name email')
+        .sort(sortObject)
+        .skip(skip)
+        .limit(limitNumber)
+        .lean(),
+      LifeInsurance.countDocuments(searchQuery)
+    ]);
+
+    const totalPages = Math.ceil(totalCount / limitNumber);
+
+    const paginationData = {
+      currentPage: pageNumber,
+      totalPages,
+      totalCount,
+      limit: limitNumber,
+      hasNextPage: pageNumber < totalPages,
+      hasPrevPage: pageNumber > 1
+    };
+
+    successResponse(res, {
+      policies,
+      pagination: paginationData
+    }, 'Deleted life insurance policies retrieved successfully', 200);
+  } catch (error) {
+    logger.error('Get deleted life insurance policies error:', error);
+    return errorResponse(res, 'Failed to retrieve deleted life insurance policies', 500);
+  }
+};
+
+// Get deleted life insurance statistics
+const getDeletedLifeInsuranceStats = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can view deleted life insurance statistics', 403);
+    }
+
+    const [
+      totalDeletedPolicies,
+      deletedNewPolicies,
+      deletedRenewalPolicies,
+      recentlyDeletedPolicies
+    ] = await Promise.all([
+      LifeInsurance.countDocuments({ isActive: false }),
+      LifeInsurance.countDocuments({ 'insuranceDetails.policyType': 'New', isActive: false }),
+      LifeInsurance.countDocuments({ 'insuranceDetails.policyType': 'Renewal', isActive: false }),
+      LifeInsurance.countDocuments({
+        isActive: false,
+        updatedAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      })
+    ]);
+
+    const stats = {
+      totalDeletedPolicies,
+      deletedNewPolicies,
+      deletedRenewalPolicies,
+      recentlyDeletedPolicies,
+      newPolicyPercentage: totalDeletedPolicies > 0 ? Math.round((deletedNewPolicies / totalDeletedPolicies) * 100) : 0,
+      renewalPolicyPercentage: totalDeletedPolicies > 0 ? Math.round((deletedRenewalPolicies / totalDeletedPolicies) * 100) : 0
+    };
+
+    successResponse(res, { stats }, 'Deleted life insurance statistics retrieved successfully', 200);
+  } catch (error) {
+    logger.error('Get deleted life insurance stats error:', error);
+    return errorResponse(res, 'Failed to retrieve deleted life insurance statistics', 500);
+  }
+};
+
+// Permanently delete life insurance policy
+const permanentlyDeleteLifeInsurancePolicy = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can permanently delete life insurance policies', 403);
+    }
+
+    const { policyId } = req.params;
+
+    const policy = await LifeInsurance.findById(policyId);
+    
+    if (!policy) {
+      return errorResponse(res, 'Life insurance policy not found', 404);
+    }
+
+    // Only allow permanent deletion of inactive policies
+    if (policy.isActive) {
+      return errorResponse(res, 'Policy must be inactive to be permanently deleted', 400);
+    }
+
+    // Collect all S3 files to be deleted
+    const filesToDeleteFromS3 = [];
+
+    // Collect policy file
+    if (policy.uploadPolicy?.policyFileUrl) {
+      const s3Key = extractS3KeyEnhanced(policy.uploadPolicy.policyFileUrl);
+      if (s3Key) filesToDeleteFromS3.push(s3Key);
+    }
+
+    // Collect documents
+    policy.uploadDocuments?.forEach(doc => {
+      const s3Key = extractS3KeyEnhanced(doc.documentUrl);
+      if (s3Key) filesToDeleteFromS3.push(s3Key);
+    });
+
+    // Delete files from S3 first
+    let s3DeletionResults = [];
+    if (filesToDeleteFromS3.length > 0) {
+      try {
+        logger.info('Starting S3 cleanup for permanent life insurance policy deletion:', {
+          policyId: policy._id,
+          policyNumber: policy.insuranceDetails?.policyNumber,
+          filesToDelete: filesToDeleteFromS3,
+          deletedBy: req.admin._id
+        });
+        
+        s3DeletionResults = await deleteMultipleFilesFromS3(filesToDeleteFromS3);
+        
+        logger.info('S3 cleanup completed for life insurance policy deletion:', {
+          policyId: policy._id,
+          results: s3DeletionResults,
+          totalFiles: filesToDeleteFromS3.length,
+          deletedBy: req.admin._id
+        });
+      } catch (s3Error) {
+        logger.error('S3 deletion error for life insurance policy:', {
+          policyId: policy._id,
+          error: s3Error.message,
+          files: filesToDeleteFromS3
+        });
+        // Continue with database deletion even if S3 fails
+      }
+    }
+
+    // Delete from database
+    await LifeInsurance.findByIdAndDelete(policyId);
+
+    logger.info('Life insurance policy permanently deleted:', {
+      policyId: policy._id,
+      policyNumber: policy.insuranceDetails?.policyNumber,
+      s3FilesDeleted: filesToDeleteFromS3.length,
+      deletedBy: req.admin._id
+    });
+
+    successResponse(res, {
+      policyId: policy._id,
+      policyNumber: policy.insuranceDetails?.policyNumber,
+      s3FilesDeleted: filesToDeleteFromS3.length,
+      s3DeletionResults
+    }, 'Life insurance policy permanently deleted successfully', 200);
+  } catch (error) {
+    logger.error('Permanent life insurance policy deletion error:', error);
+    return errorResponse(res, 'Failed to permanently delete life insurance policy', 500);
+  }
+};
+
 module.exports = {
   createAdmin,
   getAllAdmins,
@@ -698,5 +906,8 @@ module.exports = {
   deleteAdmin,
   getDeletedCustomers,  // NEW
   permanentlyDeleteCustomer, // NEW
-  getDeletedCustomerStats // NEW
+  getDeletedCustomerStats, // NEW
+  getDeletedLifeInsurancePolicies, // NEW
+  getDeletedLifeInsuranceStats, // NEW
+  permanentlyDeleteLifeInsurancePolicy // NEW
 };
