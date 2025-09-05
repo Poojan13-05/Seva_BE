@@ -894,6 +894,90 @@ const permanentlyDeleteLifeInsurancePolicy = async (req, res) => {
   }
 };
 
+// Recover customer (restore from deleted state)
+const recoverCustomer = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can recover customers', 403);
+    }
+
+    const { customerId } = req.params;
+
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return errorResponse(res, 'Customer not found', 404);
+    }
+
+    // Only allow recovery of inactive customers
+    if (customer.isActive) {
+      return errorResponse(res, 'Customer is already active', 400);
+    }
+
+    // Recover the customer
+    customer.isActive = true;
+    customer.lastUpdatedBy = req.admin._id;
+    customer.updatedAt = new Date();
+    
+    await customer.save();
+
+    logger.info('Customer recovered:', {
+      customerId: customer.customerId,
+      recoveredBy: req.admin._id,
+      ip: req.ip
+    });
+
+    successResponse(res, { customer }, 'Customer recovered successfully', 200);
+
+  } catch (error) {
+    logger.error('Recover customer error:', error);
+    return errorResponse(res, 'Failed to recover customer', 500);
+  }
+};
+
+// Recover life insurance policy (restore from deleted state)
+const recoverLifeInsurancePolicy = async (req, res) => {
+  try {
+    if (req.admin.role !== 'super_admin') {
+      return errorResponse(res, 'Only super admin can recover life insurance policies', 403);
+    }
+
+    const { policyId } = req.params;
+
+    const policy = await LifeInsurance.findById(policyId)
+      .populate('clientDetails.customer', 'customerId personalDetails corporateDetails');
+    
+    if (!policy) {
+      return errorResponse(res, 'Life insurance policy not found', 404);
+    }
+
+    // Only allow recovery of inactive policies
+    if (policy.isActive) {
+      return errorResponse(res, 'Life insurance policy is already active', 400);
+    }
+
+    // Recover the policy
+    policy.isActive = true;
+    policy.lastUpdatedBy = req.admin._id;
+    policy.updatedAt = new Date();
+    
+    await policy.save();
+
+    logger.info('Life insurance policy recovered:', {
+      policyId: policy._id,
+      policyNumber: policy.insuranceDetails?.policyNumber,
+      recoveredBy: req.admin._id,
+      ip: req.ip
+    });
+
+    successResponse(res, { policy }, 'Life insurance policy recovered successfully', 200);
+
+  } catch (error) {
+    logger.error('Recover life insurance policy error:', error);
+    return errorResponse(res, 'Failed to recover life insurance policy', 500);
+  }
+};
+
 module.exports = {
   createAdmin,
   getAllAdmins,
@@ -906,8 +990,10 @@ module.exports = {
   deleteAdmin,
   getDeletedCustomers,  // NEW
   permanentlyDeleteCustomer, // NEW
+  recoverCustomer,      // NEW
   getDeletedCustomerStats, // NEW
   getDeletedLifeInsurancePolicies, // NEW
   getDeletedLifeInsuranceStats, // NEW
-  permanentlyDeleteLifeInsurancePolicy // NEW
+  permanentlyDeleteLifeInsurancePolicy, // NEW
+  recoverLifeInsurancePolicy // NEW
 };

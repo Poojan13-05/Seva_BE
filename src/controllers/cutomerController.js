@@ -737,16 +737,51 @@ const exportCustomers = async (req, res) => {
       'Created By': customer.createdBy?.name || 'N/A'
     }));
 
-    // Set headers for Excel download
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=customers_export_${new Date().toISOString().split('T')[0]}.xlsx`);
+    // Create Excel workbook using xlsx library
+    const XLSX = require('xlsx');
+    
+    // Create a new workbook and worksheet
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
 
-    // For now, return JSON data (Excel generation can be added with a library like xlsx)
-    successResponse(res, { 
-      exportData,
+    // Auto-fit columns
+    const maxLength = {};
+    Object.keys(exportData[0] || {}).forEach(key => {
+      maxLength[key] = key.length;
+      exportData.forEach(row => {
+        const length = String(row[key] || '').length;
+        if (length > maxLength[key]) {
+          maxLength[key] = length;
+        }
+      });
+    });
+
+    const colWidths = Object.keys(maxLength).map(key => ({
+      wch: Math.min(maxLength[key] + 2, 50) // Max width of 50
+    }));
+    worksheet['!cols'] = colWidths;
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Customers');
+
+    // Generate Excel buffer
+    const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Set headers for Excel download
+    const fileName = `customers_export_${new Date().toISOString().split('T')[0]}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', excelBuffer.length);
+
+    logger.info('Customer Excel export generated:', {
       totalRecords: exportData.length,
-      exportDate: new Date().toISOString()
-    }, 'Customer data exported successfully', 200);
+      fileName,
+      requestedBy: req.admin._id,
+      ip: req.ip
+    });
+
+    // Send the Excel file
+    res.send(excelBuffer);
 
   } catch (error) {
     logger.error('Export customers error:', error);
