@@ -17,7 +17,11 @@ const {
   getDeletedLifeInsurancePolicies, // NEW
   getDeletedLifeInsuranceStats, // NEW
   permanentlyDeleteLifeInsurancePolicy, // NEW
-  recoverLifeInsurancePolicy // NEW
+  recoverLifeInsurancePolicy, // NEW
+  getDeletedHealthInsurancePolicies, // NEW
+  getDeletedHealthInsuranceStats, // NEW
+  permanentlyDeleteHealthInsurancePolicy, // NEW
+  recoverHealthInsurancePolicy // NEW
 } = require('../controllers/superAdminController');
 const { authenticate } = require('../middleware/auth');
 const { 
@@ -55,5 +59,11 @@ router.get('/life-insurance/deleted', getDeletedLifeInsurancePolicies);
 router.get('/life-insurance/deleted/stats', getDeletedLifeInsuranceStats);
 router.delete('/life-insurance/:policyId/permanent', permanentlyDeleteLifeInsurancePolicy);
 router.patch('/life-insurance/:policyId/recover', recoverLifeInsurancePolicy);
+
+// Health Insurance Management (only for super admin)
+router.get('/health-insurance/deleted', getDeletedHealthInsurancePolicies);
+router.get('/health-insurance/deleted/stats', getDeletedHealthInsuranceStats);
+router.delete('/health-insurance/:policyId/permanent', permanentlyDeleteHealthInsurancePolicy);
+router.patch('/health-insurance/:policyId/recover', recoverHealthInsurancePolicy);
 
 module.exports = router;
