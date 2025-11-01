@@ -68,9 +68,17 @@ const getUploadFolder = (fieldname, filename) => {
     case 'newAdditionalDocuments':
       return `${baseFolder}/additional-documents`;
     case 'policyFile':
+      // Determine if it's life or health insurance based on request path
+      if (filename.includes('health') || fieldname.includes('health')) {
+        return 'health-insurance/policy-files';
+      }
       return 'life-insurance/policy-files';
     case 'uploadDocuments':
     case 'newUploadDocuments':
+      // Determine if it's life or health insurance based on request path
+      if (filename.includes('health') || fieldname.includes('health')) {
+        return 'health-insurance/documents';
+      }
       return 'life-insurance/documents';
     default:
       // FIXED: Don't use misc folder, use documents as fallback
@@ -88,7 +96,7 @@ const s3Storage = multerS3({
     const folder = getUploadFolder(file.fieldname, file.originalname);
     const fileName = generateFileName(file.originalname, file.fieldname, req.body.customerId);
     const fullPath = `${folder}/${fileName}`;
-    
+
     console.log(`Uploading file to S3: ${fullPath}`);
     cb(null, fullPath);
   },
@@ -99,6 +107,37 @@ const s3Storage = multerS3({
       uploadedBy: req.admin ? req.admin._id.toString() : 'system',
       uploadedAt: new Date().toISOString(),
       customerId: req.body.customerId || 'unknown'
+    });
+  }
+});
+
+// S3 storage configuration for health insurance documents - FIXED FOR v3
+const s3StorageHealthInsurance = multerS3({
+  s3: s3Client,
+  bucket: process.env.AWS_S3_BUCKET || 'seva-consultancy-documents',
+  acl: 'private',
+  contentType: multerS3.AUTO_CONTENT_TYPE,
+  key: function (req, file, cb) {
+    let folder;
+    if (file.fieldname === 'policyFile') {
+      folder = 'health-insurance/policy-files';
+    } else {
+      folder = 'health-insurance/documents';
+    }
+    const fileName = generateFileName(file.originalname, file.fieldname, req.body.customerId);
+    const fullPath = `${folder}/${fileName}`;
+
+    console.log(`Uploading health insurance file to S3: ${fullPath}`);
+    cb(null, fullPath);
+  },
+  metadata: function (req, file, cb) {
+    cb(null, {
+      fieldName: file.fieldname,
+      originalName: file.originalname,
+      uploadedBy: req.admin ? req.admin._id.toString() : 'system',
+      uploadedAt: new Date().toISOString(),
+      customerId: req.body.customerId || 'unknown',
+      insuranceType: 'health'
     });
   }
 });
@@ -146,7 +185,7 @@ const uploadLifeInsuranceDocuments = multer({
   storage: s3Storage,
   fileFilter: (req, file, cb) => {
     const allowedFields = ['policyFile', 'uploadDocuments', 'newUploadDocuments'];
-    
+
     if (!allowedFields.includes(file.fieldname)) {
       const error = new Error('Unexpected file field');
       error.code = 'INVALID_FIELD';
@@ -157,7 +196,7 @@ const uploadLifeInsuranceDocuments = multer({
     // Allow images and documents
     const allowedMimes = [
       'image/jpeg',
-      'image/jpg', 
+      'image/jpg',
       'image/png',
       'application/pdf',
       'application/msword',
@@ -176,6 +215,44 @@ const uploadLifeInsuranceDocuments = multer({
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
     files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 15 // Increased for life insurance docs
+  }
+});
+
+// Enhanced multer configuration for health insurance documents
+const uploadHealthInsuranceDocuments = multer({
+  storage: s3StorageHealthInsurance,
+  fileFilter: (req, file, cb) => {
+    const allowedFields = ['policyFile', 'uploadDocuments', 'newUploadDocuments'];
+
+    if (!allowedFields.includes(file.fieldname)) {
+      const error = new Error('Unexpected file field');
+      error.code = 'INVALID_FIELD';
+      error.details = `Invalid file field name. Use: ${allowedFields.join(', ')}`;
+      return cb(error, false);
+    }
+
+    // Allow images and documents
+    const allowedMimes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      const error = new Error('Invalid file type');
+      error.code = 'INVALID_FILE_TYPE';
+      error.details = 'Only images (JPEG, PNG) and documents (PDF, DOC, DOCX) are allowed';
+      cb(error, false);
+    }
+  },
+  limits: {
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
+    files: parseInt(process.env.MAX_FILES_PER_REQUEST) || 15 // Increased for health insurance docs
   }
 });
 
@@ -201,6 +278,13 @@ const uploadMiddleware = {
   
   // Life insurance document uploads
   lifeInsuranceDocuments: uploadLifeInsuranceDocuments.fields([
+    { name: 'policyFile', maxCount: 1 },
+    { name: 'uploadDocuments', maxCount: 10 },
+    { name: 'newUploadDocuments', maxCount: 10 }
+  ]),
+
+  // Health insurance document uploads
+  healthInsuranceDocuments: uploadHealthInsuranceDocuments.fields([
     { name: 'policyFile', maxCount: 1 },
     { name: 'uploadDocuments', maxCount: 10 },
     { name: 'newUploadDocuments', maxCount: 10 }

@@ -116,10 +116,33 @@ const authenticate = async (req, res, next) => {
   }
 };
 
+// Middleware to check if user is super admin
+const checkSuperAdmin = async (req, res, next) => {
+  try {
+    if (!req.admin) {
+      return errorResponse(res, 'Authentication required', 401);
+    }
 
+    if (req.admin.role !== 'super_admin') {
+      logger.warn('Unauthorized super admin access attempt:', {
+        adminId: req.admin._id,
+        adminRole: req.admin.role,
+        requestedUrl: req.originalUrl,
+        ip: req.ip
+      });
+      return errorResponse(res, 'Access denied. Super admin privileges required.', 403);
+    }
+
+    next();
+  } catch (error) {
+    logger.error('Super admin check error:', error);
+    return errorResponse(res, 'Authorization check failed', 500);
+  }
+};
 
 module.exports = {
   authenticate,
+  checkSuperAdmin,
   generateToken,
   generateRefreshToken,
   verifyToken
