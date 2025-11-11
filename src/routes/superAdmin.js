@@ -1,6 +1,6 @@
 // src/routes/superAdmin.js
 const express = require('express');
-const { 
+const {
   createAdmin,
   getAllAdmins,
   getAdminStats,        // NEW
@@ -21,7 +21,11 @@ const {
   getDeletedHealthInsurancePolicies, // NEW
   getDeletedHealthInsuranceStats, // NEW
   permanentlyDeleteHealthInsurancePolicy, // NEW
-  recoverHealthInsurancePolicy // NEW
+  recoverHealthInsurancePolicy, // NEW
+  getDeletedVehicleInsurancePolicies, // NEW
+  getDeletedVehicleInsuranceStats, // NEW
+  permanentlyDeleteVehicleInsurancePolicy, // NEW
+  recoverVehicleInsurancePolicy // NEW
 } = require('../controllers/superAdminController');
 const { authenticate } = require('../middleware/auth');
 const { 
@@ -65,5 +69,11 @@ router.get('/health-insurance/deleted', getDeletedHealthInsurancePolicies);
 router.get('/health-insurance/deleted/stats', getDeletedHealthInsuranceStats);
 router.delete('/health-insurance/:policyId/permanent', permanentlyDeleteHealthInsurancePolicy);
 router.patch('/health-insurance/:policyId/recover', recoverHealthInsurancePolicy);
+
+// Vehicle Insurance Management (only for super admin)
+router.get('/vehicle-insurance/deleted', getDeletedVehicleInsurancePolicies);
+router.get('/vehicle-insurance/deleted/stats', getDeletedVehicleInsuranceStats);
+router.delete('/vehicle-insurance/:policyId/permanent', permanentlyDeleteVehicleInsurancePolicy);
+router.patch('/vehicle-insurance/:policyId/recover', recoverVehicleInsurancePolicy);
 
 module.exports = router;

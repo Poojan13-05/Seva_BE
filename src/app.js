@@ -16,6 +16,7 @@ const superAdminRoutes = require('./routes/superAdmin');
 const customerRoutes = require('./routes/customer'); // ✅ NEW: Customer routes
 const lifeInsuranceRoutes = require('./routes/lifeInsurance'); // ✅ NEW: Life Insurance routes
 const healthInsuranceRoutes = require('./routes/healthInsurance'); // ✅ NEW: Health Insurance routes
+const vehicleInsuranceRoutes = require('./routes/vehicleInsurance'); // ✅ NEW: Vehicle Insurance routes
 const { errorResponse } = require('./utils/responseHandler');
 const logger = require('./utils/logger');
 
@@ -69,6 +70,7 @@ app.use('/api/v1/super-admin', superAdminRoutes);
 app.use('/api/v1/customers', customerRoutes); // ✅ NEW: Customer routes
 app.use('/api/v1/life-insurance', lifeInsuranceRoutes); // ✅ NEW: Life Insurance routes
 app.use('/api/v1/health-insurance', healthInsuranceRoutes); // ✅ NEW: Health Insurance routes
+app.use('/api/v1/vehicle-insurance', vehicleInsuranceRoutes); // ✅ NEW: Vehicle Insurance routes
 
 // Health check
 app.get('/health', (req, res) => {
